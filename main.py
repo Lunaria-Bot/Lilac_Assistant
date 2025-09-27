@@ -48,12 +48,17 @@ class MainBot(commands.Bot):
         await self.load_extension("cogs.leaderboard")
         await self.load_extension("cogs.tasks")
 
-        # Sync slash commands to all guilds
+        # Sync slash commands guild-only
         for gid in GUILD_IDS:
             guild = discord.Object(id=gid)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            log.info("✅ Slash commands synced to guild %s", gid)
+            try:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                log.info("✅ Slash commands synced to guild %s", gid)
+            except discord.Forbidden:
+                log.error("❌ Missing access to sync commands in guild %s", gid)
+            except discord.HTTPException as e:
+                log.error("⚠️ Failed to sync commands in guild %s: %s", gid, e)
 
 bot = MainBot()
 
@@ -62,4 +67,3 @@ async def on_ready():
     log.info("🚀 Logged in as %s (%s)", bot.user, bot.user.id)
 
 bot.run(TOKEN)
-
