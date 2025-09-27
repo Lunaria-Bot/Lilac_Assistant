@@ -1,85 +1,77 @@
-import asyncio
-import time
 import logging
-import os
-import re
+import asyncio
 import discord
 from discord.ext import commands
 
 log = logging.getLogger("cog-reminder")
 
-# Cooldowns configurables (facile à étendre)
-COOLDOWN_SECONDS = {
-    "summon": 30 * 60,  # 30 minutes
-    # "open-boxes": 60,
-    # "open-pack": 60,
-}
-
-def cd_key(gid: int, uid: int, action: str) -> str:
-    return f"cooldown:{action}:{gid}:{uid}"
-
-def now_ts() -> int:
-    return int(time.time())
-
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.guild_id = int(os.getenv("GUILD_ID", "0"))
-        self.mazoku_id = int(os.getenv("MAZOKU_BOT_ID", "0"))
+        # Dictionnaire pour stocker les reminders actifs par utilisateur
+        self.active_reminders = {}
 
-    async def start_reminder(self, action: str, user_id: int, channel: discord.TextChannel):
-        """Démarre un cooldown + planifie un rappel pour une action donnée."""
-        if action not in COOLDOWN_SECONDS:
-            return  # action non supportée (future extension facile)
+    async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        """Démarre un reminder pour un joueur après un summon claim classique."""
+        user_id = member.id
 
-        if not getattr(self.bot, "redis", None):
-            log.error("Redis not connected: cannot start reminder")
+        # Si un reminder est déjà actif pour ce joueur, on ne le relance pas
+        if user_id in self.active_reminders:
+            log.debug("⏸️ Reminder déjà actif pour %s", member.display_name)
             return
-
-        duration = COOLDOWN_SECONDS[action]
-        key = cd_key(channel.guild.id, user_id, action)
-
-        # Stocker le timestamp
-        await self.bot.redis.set(key, str(now_ts()), ex=duration + 60)
-        log.info("⏳ Reminder started: user=%s action=%s duration=%ss", user_id, action, duration)
 
         async def reminder_task():
-            await asyncio.sleep(duration)
-            marker = await self.bot.redis.get(key)
-            if marker:
+            try:
+                # ⏳ Cooldown = 30 minutes (1800 secondes)
+                await asyncio.sleep(1800)
                 try:
-                    embed = discord.Embed(
-                        title="🔔 Reminder",
-                        description=f"<@{user_id}>, your **/{action}** is ready again!",
-                        color=discord.Color.green()
+                    await channel.send(
+                        f"⏰ {member.mention} ton cooldown de summon est terminé, tu peux relancer un summon !"
                     )
-                    await channel.send(embed=embed)
-                    log.info("🔔 Reminder sent: user=%s action=%s", user_id, action)
-                except Exception as e:
-                    log.error("Failed to send reminder: %s", e)
+                    log.info("📩 Reminder envoyé dans %s pour %s", channel.name, member.display_name)
+                except discord.Forbidden:
+                    log.warning("❌ Impossible d’envoyer un message dans %s", channel.name)
+            finally:
+                # Nettoyage
+                self.active_reminders.pop(user_id, None)
 
-        asyncio.create_task(reminder_task())
+        task = asyncio.create_task(reminder_task())
+        self.active_reminders[user_id] = task
+        log.info("▶️ Reminder démarré pour %s dans %s", member.display_name, channel.name)
 
+    async def cancel_reminder(self, member: discord.Member):
+        """Annule un reminder actif pour un joueur."""
+        task = self.active_reminders.pop(member.id, None)
+        if task:
+            task.cancel()
+            log.info("⏹️ Reminder annulé pour %s", member.display_name)
+
+    # --- Listener : déclenche uniquement sur summon claim ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        # Vérifier que c’est bien Mazoku dans le bon serveur
-        if after.author.id != self.mazoku_id:
-            return
-        if not after.guild or after.guild.id != self.guild_id:
-            return
-        if not after.embeds:
+        if not after.guild or not after.embeds:
             return
 
         embed = after.embeds[0]
         title = (embed.title or "").lower()
 
-        # Détection Summon Claimed (extensible à d’autres actions plus tard)
-        if "summon claimed" in title:
-            match = re.search(r"<@!?(\d+)>", embed.description or "")
+        # On ne déclenche PAS sur auto summon
+        if "summon claimed" in title and "auto summon claimed" not in title:
+            if not embed.description:
+                return
+            import re
+            match = re.search(r"<@!?(\d+)>", embed.description)
             if not match:
                 return
+
             user_id = int(match.group(1))
-            await self.start_reminder("summon", user_id, after.channel)
+            member = after.guild.get_member(user_id)
+            if not member:
+                return
+
+            # 👉 Ici on démarre le reminder dans le channel du message
+            await self.start_reminder(member, after.channel)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Reminder(bot))
