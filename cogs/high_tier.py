@@ -24,6 +24,9 @@ RARITY_MESSAGES = {
     "UR":  "🌸 An Ultra Rare Flower just bloomed! Grab it!",
 }
 
+# Define rarity priority (higher index = higher priority)
+RARITY_PRIORITY = {"SR": 1, "SSR": 2, "UR": 3}
+
 class HighTier(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -119,15 +122,22 @@ class HighTier(commands.Cog):
         embed = after.embeds[0]
         desc = (embed.description or "")
 
-        # Look for one of the rarity emoji IDs in the embed description
+        found_rarity = None
+        highest_priority = 0
+
+        # Look for emoji IDs in the embed description
         for emoji_id, rarity in RARITY_EMOJIS.items():
-            if f"<:{rarity}:{emoji_id}>" in desc or f"<a:{rarity}:{emoji_id}>" in desc:
-                role = after.guild.get_role(HIGH_TIER_ROLE_ID)
-                if role:
-                    msg = RARITY_MESSAGES.get(rarity, f"A {rarity} flower appeared!")
-                    await after.channel.send(f"{msg}\n🔥 {role.mention}")
-                    log.info("🌸 High Tier ping sent for rarity %s in %s", rarity, after.channel.name)
-                break
+            if str(emoji_id) in desc:
+                if RARITY_PRIORITY[rarity] > highest_priority:
+                    found_rarity = rarity
+                    highest_priority = RARITY_PRIORITY[rarity]
+
+        if found_rarity:
+            role = after.guild.get_role(HIGH_TIER_ROLE_ID)
+            if role:
+                msg = RARITY_MESSAGES.get(found_rarity, f"A {found_rarity} flower appeared!")
+                await after.channel.send(f"{msg}\n🔥 {role.mention}")
+                log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
 
 
 async def setup(bot: commands.Bot):
