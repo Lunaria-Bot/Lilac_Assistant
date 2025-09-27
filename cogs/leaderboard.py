@@ -13,38 +13,56 @@ log = logging.getLogger("cog-leaderboard")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 MAZOKU_BOT_ID = int(os.getenv("MAZOKU_BOT_ID", "0"))
 
-class Leaderboard(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+# --- View avec Select ---
+class LeaderboardView(discord.ui.View):
+    def __init__(self, bot, guild):
+        super().__init__(timeout=120)
         self.bot = bot
-        # Pause switches for categories
-        self.paused = {
-            "all": False,
-            "monthly": False,
-            "autosummon": False,
-            "summon": False,
+        self.guild = guild
+
+    @discord.ui.select(
+        placeholder="Choisis une catégorie",
+        options=[
+            discord.SelectOption(label="All time", value="all"),
+            discord.SelectOption(label="Monthly", value="monthly"),
+            discord.SelectOption(label="AutoSummon", value="autosummon"),
+            discord.SelectOption(label="Summon", value="summon"),
+        ]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        category = select.values[0]
+        embed = await self.build_leaderboard(category, interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def build_leaderboard(self, category: str, guild: discord.Guild):
+        key_map = {
+            "all": "leaderboard",
+            "monthly": "activity:monthly",
+            "autosummon": "activity:autosummon",
+            "summon": "activity:summon",
         }
-        log.info("⚙️ Leaderboard cog loaded with GUILD_ID=%s, MAZOKU_BOT_ID=%s", GUILD_ID, MAZOKU_BOT_ID)
+        key = key_map.get(category, "leaderboard")
 
-    # --- Slash commands ---
-
-    @app_commands.command(name="leaderboard", description="View the leaderboard")
-    async def leaderboard(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
+        # Vérifier Redis
         if not getattr(self.bot, "redis", None):
-            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
-            return
+            return discord.Embed(
+                title=f"🏆 {category.title()} Leaderboard",
+                description="❌ Redis not connected.",
+                color=discord.Color.red()
+            )
 
-        data = await self.bot.redis.hgetall("leaderboard")
+        data = await self.bot.redis.hgetall(key)
         if not data:
-            await interaction.followup.send("⚠️ Leaderboard is empty.", ephemeral=True)
-            return
+            return discord.Embed(
+                title=f"🏆 {category.title()} Leaderboard",
+                description="Empty",
+                color=discord.Color.gold()
+            )
 
-        # Sort top 10
+        # Trier top 10
         try:
             sorted_data = sorted(data.items(), key=lambda x: int(x[1]), reverse=True)[:10]
         except Exception:
-            # If some values are not ints, coerce safely
             sorted_data = sorted(
                 ((k, int(v) if str(v).isdigit() else 0) for k, v in data.items()),
                 key=lambda x: x[1],
@@ -53,29 +71,48 @@ class Leaderboard(commands.Cog):
 
         lines = []
         for i, (uid, score) in enumerate(sorted_data, start=1):
-            member = interaction.guild.get_member(int(uid))
+            member = guild.get_member(int(uid))
             name = member.display_name if member else f"User {uid}"
             lines.append(f"**{i}.** {name} — {score} pts")
 
-        embed = discord.Embed(
-            title="🏆 Leaderboard",
+        return discord.Embed(
+            title=f"🏆 {category.title()} Leaderboard",
             description="\n".join(lines) if lines else "No entries yet.",
             color=discord.Color.gold()
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
+
+class Leaderboard(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.paused = {
+            "all": False,
+            "monthly": False,
+            "autosummon": False,
+            "summon": False,
+        }
+        log.info("⚙️ Leaderboard cog loaded with GUILD_ID=%s, MAZOKU_BOT_ID=%s", GUILD_ID, MAZOKU_BOT_ID)
+
+    # --- Commande principale ---
+    @app_commands.command(name="leaderboard", description="View the leaderboard")
+    async def leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        view = LeaderboardView(self.bot, interaction.guild)
+        embed = await view.build_leaderboard("all", interaction.guild)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # --- Admin commands ---
     @app_commands.command(name="leaderboard-pause", description="Pause a leaderboard category (Admin only)")
     @app_commands.describe(category="Which category to pause (all, monthly, autosummon, summon)")
     async def leaderboard_pause(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=True)
-
         if not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
         if category not in self.paused:
             await interaction.followup.send("⚠️ Unknown category.", ephemeral=True)
             return
-
         self.paused[category] = True
         await interaction.followup.send(f"⏸️ Leaderboard category **{category}** paused.", ephemeral=True)
 
@@ -83,14 +120,12 @@ class Leaderboard(commands.Cog):
     @app_commands.describe(category="Which category to resume (all, monthly, autosummon, summon)")
     async def leaderboard_resume(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=True)
-
         if not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
         if category not in self.paused:
             await interaction.followup.send("⚠️ Unknown category.", ephemeral=True)
             return
-
         self.paused[category] = False
         await interaction.followup.send(f"▶️ Leaderboard category **{category}** resumed.", ephemeral=True)
 
@@ -98,7 +133,6 @@ class Leaderboard(commands.Cog):
     @app_commands.describe(category="Which category to reset (all, monthly, autosummon, summon)")
     async def leaderboard_reset(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=True)
-
         if not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
@@ -125,7 +159,6 @@ class Leaderboard(commands.Cog):
     @app_commands.describe(member="The member to check")
     async def leaderboard_debug(self, interaction: discord.Interaction, member: discord.Member):
         await interaction.response.defer(ephemeral=True)
-
         if not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
@@ -139,43 +172,18 @@ class Leaderboard(commands.Cog):
         autosummon = await self.bot.redis.hget("activity:autosummon", uid) or 0
         summon = await self.bot.redis.hget("activity:summon", uid) or 0
 
-        msg = (
-            f"📊 Debug for {member.mention}:\n"
-            f"- All time: {int(all_time)}\n"
-            f"- Monthly: {int(monthly)}\n"
-            f"- AutoSummon: {int(autosummon)}\n"
-            f"- Summon: {int(summon)}"
-        )
+        embed = discord.Embed(title=f"📊 Stats for {member.display_name}", color=discord.Color.blurple())
+        embed.add_field(name="All time", value=int(all_time), inline=False)
+        embed.add_field(name="Monthly", value=int(monthly), inline=False)
+        embed.add_field(name="AutoSummon", value=int(autosummon), inline=False)
+        embed.add_field(name="Summon", value=int(summon), inline=False)
 
-        await interaction.followup.send(msg, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # --- Listeners ---
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        # Debug to confirm listener triggers
-        log.debug("DEBUG: on_message triggered from %s (%s)", message.author, message.author.id)
-
-        # Only consider Mazoku in the specified guild
-        if message.author.id != MAZOKU_BOT_ID:
-            return
-        if not message.guild or message.guild.id != GUILD_ID:
-            return
-
-        log.info("📩 Mazoku message (ID=%s): %s", message.id, message.content)
-        if message.embeds:
-            for i, e in enumerate(message.embeds):
-                log.info("Embed %s:", i)
-                log.info("  Title: %s", e.title)
-                log.info("  Desc: %s", e.description)
-                log.info("  Footer: %s", e.footer.text if e.footer else "")
-
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        # Debug to confirm listener triggers
-        log.debug("DEBUG: on_message_edit triggered from %s (%s)", after.author, after.author.id)
-
-        # Only consider Mazoku in the specified guild
+        # Filtre: uniquement Mazoku dans le bon serveur
         if after.author.id != MAZOKU_BOT_ID:
             return
         if not after.guild or after.guild.id != GUILD_ID:
@@ -185,12 +193,13 @@ class Leaderboard(commands.Cog):
 
         embed = after.embeds[0]
         title = (embed.title or "").lower()
+        log.debug("Embed title detected: %s", title)
 
-        # We count points when the embed shows a claim
-        if "card claimed" in title or "auto summon claimed" in title:
+        # Prendre en compte plusieurs libellés possibles
+        if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
             log.info("✏️ Claim detected in edited message %s", after.id)
 
-            # Extract the user who claimed from the description
+            # Extraire le joueur
             match = re.search(r"<@!?(\d+)>", embed.description or "")
             if not match:
                 log.warning("⚠️ Aucun joueur trouvé dans l’embed.")
@@ -202,12 +211,11 @@ class Leaderboard(commands.Cog):
                 log.warning("⚠️ Impossible de trouver le membre %s dans le serveur.", user_id)
                 return
 
-            # Ensure Redis is available
             if not getattr(self.bot, "redis", None):
                 log.error("❌ Redis not connected: cannot add points.")
                 return
 
-            # Prevent double counting for the same message/user
+            # Anti double comptage
             claim_key = f"claim:{after.id}:{user_id}"
             already = await self.bot.redis.get(claim_key)
             if already:
@@ -222,7 +230,7 @@ class Leaderboard(commands.Cog):
                 await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
                 await self.bot.redis.incr("activity:monthly:total")
 
-            # Category: autosummon vs summon (based on title)
+            # Autosummon vs Summon (selon le titre)
             if "auto summon claimed" in title:
                 if not self.paused["autosummon"]:
                     await self.bot.redis.hincrby("activity:autosummon", str(user_id), 1)
@@ -230,7 +238,7 @@ class Leaderboard(commands.Cog):
                 if not self.paused["summon"]:
                     await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
 
-            # Global leaderboard
+            # Global
             if not self.paused["all"]:
                 await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
 
