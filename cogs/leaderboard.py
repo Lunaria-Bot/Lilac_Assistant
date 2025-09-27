@@ -132,38 +132,13 @@ class Leaderboard(commands.Cog):
 
         await interaction.followup.send(msg, ephemeral=True)
 
-    # --- Debug: log all Mazoku messages ---
+    # --- Debug: log ALL messages received ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.id != MAZOKU_BOT_ID:
-            return
-        if not message.guild or message.guild.id != GUILD_ID:
-            return
-
-        log.info("📩 Mazoku message detected (ID=%s)", message.id)
-        log.info("Content: %s", message.content)
+        log.info("📩 Message reçu de %s (%s): %s", message.author, message.author.id, message.content)
 
         if message.embeds:
             for i, e in enumerate(message.embeds):
-                log.info("Embed %s:", i)
-                log.info("  Title: %s", e.title)
-                log.info("  Desc: %s", e.description)
-                log.info("  Footer: %s", e.footer.text if e.footer else "")
-                if e.fields:
-                    for f in e.fields:
-                        log.info("  Field: %s = %s", f.name, f.value)
-
-    # --- Debug: log Mazoku edits too ---
-    @commands.Cog.listener()
-    async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if after.author.id != MAZOKU_BOT_ID:
-            return
-        if not after.guild or after.guild.id != GUILD_ID:
-            return
-
-        log.info("✏️ Mazoku message edited (ID=%s)", after.id)
-        if after.embeds:
-            for i, e in enumerate(after.embeds):
                 log.info("Embed %s:", i)
                 log.info("  Title: %s", e.title)
                 log.info("  Desc: %s", e.description)
