@@ -47,6 +47,8 @@ class MainBot(commands.Bot):
         await self.load_extension("cogs.cooldowns")
         await self.load_extension("cogs.leaderboard")
         await self.load_extension("cogs.tasks")
+        await self.load_extension("cogs.log")
+    
 
         # Sync slash commands guild-only
         for gid in GUILD_IDS:
