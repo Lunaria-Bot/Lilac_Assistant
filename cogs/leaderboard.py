@@ -192,8 +192,7 @@ class Leaderboard(commands.Cog):
             if not self.paused["all"]:
                 await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
 
-            log.info("🏅 %s gained +1 point from %s", member.display_name,
-                     "Auto Summon Claimed" if "auto summon claimed" in log.info(
+            log.info(
                 "🏅 %s gained +1 point from %s",
                 member.display_name,
                 "Auto Summon Claimed" if "auto summon claimed" in (title + desc + footer) else "Summon Claimed"
