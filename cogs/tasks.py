@@ -7,10 +7,10 @@ from discord.ext import commands
 log = logging.getLogger("cog-tasks")
 
 STATUSES = [
-    discord.Activity(type=discord.ActivityType.watching, name="the sunflowers 🌻"),
-    discord.Activity(type=discord.ActivityType.playing, name="MoonQuill is sleeping 😴"),
-    discord.Activity(type=discord.ActivityType.listening, name="the wind in the fields 🌬️"),
-    discord.Activity(type=discord.ActivityType.competing, name="a sunflower growing contest 🌞"),
+    discord.Activity(type=discord.ActivityType.watching, name="Lilac 👀"),
+    discord.Activity(type=discord.ActivityType.playing, name="in her bed sleeping 😴"),
+    discord.Activity(type=discord.ActivityType.listening, name="to the last hit 🎵"),
+    discord.Activity(type=discord.ActivityType.competing, name="in a gambling den 🃏"),
 ]
 
 class Tasks(commands.Cog):
