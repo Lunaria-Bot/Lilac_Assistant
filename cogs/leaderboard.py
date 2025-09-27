@@ -108,18 +108,40 @@ class Leaderboard(commands.Cog):
                 ephemeral=True
             )
 
-    # --- Commandes Admin ---
+    # --- Commandes Admin avec menus déroulants ---
     @app_commands.command(name="leaderboard-reset", description="Reset des scores (admin)")
+    @app_commands.choices(
+        category=[
+            app_commands.Choice(name="All", value="all"),
+            app_commands.Choice(name="Monthly", value="monthly"),
+            app_commands.Choice(name="AutoSummon", value="autosummon"),
+            app_commands.Choice(name="Summon", value="summon"),
+            app_commands.Choice(name="Tout", value="all_keys"),
+        ]
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_reset(self, interaction: discord.Interaction):
+    async def leaderboard_reset(self, interaction: discord.Interaction, category: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         if not getattr(self.bot, "redis", None):
             await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
             return
-        for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
-            await self.bot.redis.delete(key)
-        await interaction.followup.send("🧹 Leaderboard et activités réinitialisés.", ephemeral=True)
+
+        if category.value == "all_keys":
+            for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
+                await self.bot.redis.delete(key)
+            msg = "🧹 Tous les scores ont été réinitialisés."
+        else:
+            key_map = {
+                "all": "leaderboard",
+                "monthly": "activity:monthly",
+                "autosummon": "activity:autosummon",
+                "summon": "activity:summon",
+            }
+            await self.bot.redis.delete(key_map[category.value])
+            msg = f"🧹 Catégorie `{category.value}` réinitialisée."
+
+        await interaction.followup.send(msg, ephemeral=True)
 
     @leaderboard_reset.error
     async def leaderboard_reset_error(self, interaction: discord.Interaction, error):
@@ -132,18 +154,30 @@ class Leaderboard(commands.Cog):
             await interaction.followup.send("❌ Erreur pendant le reset.", ephemeral=True)
 
     @app_commands.command(name="leaderboard-pause", description="Pause/reprise des compteurs (admin)")
-    @app_commands.describe(category="all, monthly, autosummon, summon", state="pause ou resume")
+    @app_commands.choices(
+        category=[
+            app_commands.Choice(name="All", value="all"),
+            app_commands.Choice(name="Monthly", value="monthly"),
+            app_commands.Choice(name="AutoSummon", value="autosummon"),
+            app_commands.Choice(name="Summon", value="summon"),
+        ],
+        state=[
+            app_commands.Choice(name="Pause", value="pause"),
+            app_commands.Choice(name="Resume", value="resume"),
+        ]
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_pause(self, interaction: discord.Interaction, category: str, state: str):
+    async def leaderboard_pause(
+        self,
+        interaction: discord.Interaction,
+        category: app_commands.Choice[str],
+        state: app_commands.Choice[str]
+    ):
         await interaction.response.defer(ephemeral=True)
-        valid = {"all", "monthly", "autosummon", "summon"}
-        if category not in valid or state not in {"pause", "resume"}:
-            await interaction.followup.send("❌ Paramètres invalides.", ephemeral=True)
-            return
-        self.paused[category] = (state == "pause")
+        self.paused[category.value] = (state.value == "pause")
         await interaction.followup.send(
-            f"⏸️ `{category}` → {'pause' if self.paused[category] else 'reprise'}.",
+            f"⏸️ `{category.value}` → {'pause' if self.paused[category.value] else 'reprise'}.",
             ephemeral=True
         )
 
@@ -158,17 +192,25 @@ class Leaderboard(commands.Cog):
             await interaction.followup.send("❌ Erreur pendant la mise en pause.", ephemeral=True)
 
     @app_commands.command(name="leaderboard-debug", description="Voir les stats internes (admin)")
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="Résumé", value="summary"),
+            app_commands.Choice(name="Détail complet", value="full"),
+        ]
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_debug(self, interaction: discord.Interaction):
+    async def leaderboard_debug(self, interaction: discord.Interaction, scope: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         if not getattr(self.bot, "redis", None):
             await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
             return
+
         total_monthly = await self.bot.redis.get("activity:monthly:total") or 0
         sizes = {}
         for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
             sizes[key] = await self.bot.redis.hlen(key)
+
         lines = [
             f"- **Monthly total**: {total_monthly}",
             f"- **leaderboard** size: {sizes['leaderboard']}",
@@ -176,7 +218,13 @@ class Leaderboard(commands.Cog):
             f"- **activity:autosummon** size: {sizes['activity:autosummon']}",
             f"- **activity:summon** size: {sizes['activity:summon']}",
         ]
-        await interaction.followup.send("🛠️ Debug:\n" + "\n".join(lines), ephemeral=True)
+
+        if scope.value == "summary":
+            msg = "🛠️ Debug (résumé):\n" + "\n".join(lines)
+        else:
+            msg = "🛠️ Debug (détail complet):\n" + "\n".join(lines)
+
+        await interaction.followup.send(msg, ephemeral=True)
 
     @leaderboard_debug.error
     async def leaderboard_debug_error(self, interaction: discord.Interaction, error):
@@ -201,6 +249,7 @@ class Leaderboard(commands.Cog):
         embed = after.embeds[0]
         title = (embed.title or "").lower()
         if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
+            # Trouver l'utilisateur mentionné dans la description
             match = re.search(r"<@!?(\d+)>", embed.description or "")
             if not match:
                 return
