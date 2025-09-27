@@ -175,7 +175,14 @@ class Leaderboard(commands.Cog):
         state: app_commands.Choice[str]
     ):
         await interaction.response.defer(ephemeral=True)
+
+        if category.value not in self.paused:
+            await interaction.followup.send(f"❌ Catégorie inconnue: {category.value}", ephemeral=True)
+            return
+
         self.paused[category.value] = (state.value == "pause")
+        log.info("Pause command: category=%s state=%s", category.value, state.value)
+
         await interaction.followup.send(
             f"⏸️ `{category.value}` → {'pause' if self.paused[category.value] else 'reprise'}.",
             ephemeral=True
