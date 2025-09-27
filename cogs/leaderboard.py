@@ -11,6 +11,11 @@ log = logging.getLogger("cog-leaderboard")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 MAZOKU_BOT_ID = int(os.getenv("MAZOKU_BOT_ID", "0"))
 
+def is_admin():
+    def predicate(interaction: discord.Interaction) -> bool:
+        return interaction.user.guild_permissions.administrator
+    return app_commands.check(predicate)
+
 # --- View avec Select ---
 class LeaderboardView(discord.ui.View):
     def __init__(self, bot, guild):
@@ -87,15 +92,14 @@ class Leaderboard(commands.Cog):
 
     # --- Commande principale ---
     @app_commands.command(name="leaderboard", description="View the leaderboard")
-    @app_commands.checks.cooldown(1, 120.0, key=lambda i: (i.user.id))  # 1 usage / 120s par utilisateur
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @app_commands.checks.cooldown(1, 120.0, key=lambda i: (i.user.id))
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
-
         view = LeaderboardView(self.bot, interaction.guild)
         embed = await view.build_leaderboard("all", interaction.guild, interaction.user)
         await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
-    # Gestion des erreurs de cooldown
     @leaderboard.error
     async def leaderboard_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
@@ -103,6 +107,86 @@ class Leaderboard(commands.Cog):
                 f"⏳ Tu dois attendre encore {int(error.retry_after)}s avant de relancer `/leaderboard`.",
                 ephemeral=True
             )
+
+    # --- Commandes Admin ---
+    @app_commands.command(name="leaderboard-reset", description="Reset des scores (admin)")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @is_admin()
+    async def leaderboard_reset(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not getattr(self.bot, "redis", None):
+            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
+            return
+        for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
+            await self.bot.redis.delete(key)
+        await interaction.followup.send("🧹 Leaderboard et activités réinitialisés.", ephemeral=True)
+
+    @leaderboard_reset.error
+    async def leaderboard_reset_error(self, interaction: discord.Interaction, error):
+        try:
+            if isinstance(error, app_commands.CheckFailure):
+                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Erreur pendant le reset.", ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send("❌ Erreur pendant le reset.", ephemeral=True)
+
+    @app_commands.command(name="leaderboard-pause", description="Pause/reprise des compteurs (admin)")
+    @app_commands.describe(category="all, monthly, autosummon, summon", state="pause ou resume")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @is_admin()
+    async def leaderboard_pause(self, interaction: discord.Interaction, category: str, state: str):
+        await interaction.response.defer(ephemeral=True)
+        valid = {"all", "monthly", "autosummon", "summon"}
+        if category not in valid or state not in {"pause", "resume"}:
+            await interaction.followup.send("❌ Paramètres invalides.", ephemeral=True)
+            return
+        self.paused[category] = (state == "pause")
+        await interaction.followup.send(
+            f"⏸️ `{category}` → {'pause' if self.paused[category] else 'reprise'}.",
+            ephemeral=True
+        )
+
+    @leaderboard_pause.error
+    async def leaderboard_pause_error(self, interaction: discord.Interaction, error):
+        try:
+            if isinstance(error, app_commands.CheckFailure):
+                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Erreur pendant la mise en pause.", ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send("❌ Erreur pendant la mise en pause.", ephemeral=True)
+
+    @app_commands.command(name="leaderboard-debug", description="Voir les stats internes (admin)")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    @is_admin()
+    async def leaderboard_debug(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not getattr(self.bot, "redis", None):
+            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
+            return
+        total_monthly = await self.bot.redis.get("activity:monthly:total") or 0
+        sizes = {}
+        for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
+            sizes[key] = await self.bot.redis.hlen(key)
+        lines = [
+            f"- **Monthly total**: {total_monthly}",
+            f"- **leaderboard** size: {sizes['leaderboard']}",
+            f"- **activity:monthly** size: {sizes['activity:monthly']}",
+            f"- **activity:autosummon** size: {sizes['activity:autosummon']}",
+            f"- **activity:summon** size: {sizes['activity:summon']}",
+        ]
+        await interaction.followup.send("🛠️ Debug:\n" + "\n".join(lines), ephemeral=True)
+
+    @leaderboard_debug.error
+    async def leaderboard_debug_error(self, interaction: discord.Interaction, error):
+        try:
+            if isinstance(error, app_commands.CheckFailure):
+                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Erreur pendant le debug.", ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send("❌ Erreur pendant le debug.", ephemeral=True)
 
     # --- Listeners (claims) ---
     @commands.Cog.listener()
@@ -116,35 +200,25 @@ class Leaderboard(commands.Cog):
 
         embed = after.embeds[0]
         title = (embed.title or "").lower()
-        log.debug("Embed title detected: %s", title)
-
         if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
-            log.info("✏️ Claim detected in edited message %s", after.id)
-
             match = re.search(r"<@!?(\d+)>", embed.description or "")
             if not match:
-                log.warning("⚠️ Aucun joueur trouvé dans l’embed.")
                 return
-
             user_id = int(match.group(1))
             member = after.guild.get_member(user_id)
             if not member:
-                log.warning("⚠️ Impossible de trouver le membre %s dans le serveur.", user_id)
                 return
-
             if not getattr(self.bot, "redis", None):
-                log.error("❌ Redis not connected: cannot add points.")
                 return
 
+            # Anti double-compte par message
             claim_key = f"claim:{after.id}:{user_id}"
             already = await self.bot.redis.get(claim_key)
             if already:
-                log.debug("⏸️ Claim déjà compté pour %s", user_id)
                 return
             await self.bot.redis.set(claim_key, "1", ex=86400)
 
-            log.info("➡️ Adding points for user %s", user_id)
-
+            # Compteurs
             if not self.paused["monthly"]:
                 await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
                 await self.bot.redis.incr("activity:monthly:total")
@@ -160,7 +234,6 @@ class Leaderboard(commands.Cog):
                 await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
 
             log.info("🏅 %s gained +1 point from %s", member.display_name, embed.title)
-
 
 # --- Extension setup ---
 async def setup(bot: commands.Bot):
