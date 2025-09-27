@@ -1,52 +1,97 @@
 import logging
 import asyncio
+import time
 import discord
 from discord.ext import commands
 
 log = logging.getLogger("cog-reminder")
 
+COOLDOWN_SECONDS = 1800  # 30 minutes
+
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Dictionnaire pour stocker les reminders actifs par utilisateur
         self.active_reminders = {}
 
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
-        """Démarre un reminder pour un joueur après un summon claim classique."""
+        """Start a summon reminder and persist it in Redis with channel info."""
         user_id = member.id
 
-        # Si un reminder est déjà actif pour ce joueur, on ne le relance pas
         if user_id in self.active_reminders:
-            log.debug("⏸️ Reminder déjà actif pour %s", member.display_name)
             return
+
+        if getattr(self.bot, "redis", None):
+            expire_at = int(time.time()) + COOLDOWN_SECONDS
+            # Store both expiry and channel_id
+            await self.bot.redis.hset(
+                f"reminder:summon:{user_id}",
+                mapping={"expire_at": expire_at, "channel_id": channel.id}
+            )
 
         async def reminder_task():
             try:
-                # ⏳ Cooldown = 30 minutes (1800 secondes)
-                await asyncio.sleep(1800)
+                await asyncio.sleep(COOLDOWN_SECONDS)
                 try:
                     await channel.send(
-                        f"⏰ {member.mention} ton cooldown de summon est terminé, tu peux relancer un summon !"
+                        f"⏰ {member.mention} your summon cooldown is over, you can summon again!"
                     )
-                    log.info("📩 Reminder envoyé dans %s pour %s", channel.name, member.display_name)
                 except discord.Forbidden:
-                    log.warning("❌ Impossible d’envoyer un message dans %s", channel.name)
+                    log.warning("❌ Cannot send reminder in %s", channel.name)
             finally:
-                # Nettoyage
                 self.active_reminders.pop(user_id, None)
+                if getattr(self.bot, "redis", None):
+                    await self.bot.redis.delete(f"reminder:summon:{user_id}")
 
         task = asyncio.create_task(reminder_task())
         self.active_reminders[user_id] = task
-        log.info("▶️ Reminder démarré pour %s dans %s", member.display_name, channel.name)
+        log.info("▶️ Reminder started for %s in %s", member.display_name, channel.name)
 
-    async def cancel_reminder(self, member: discord.Member):
-        """Annule un reminder actif pour un joueur."""
-        task = self.active_reminders.pop(member.id, None)
-        if task:
-            task.cancel()
-            log.info("⏹️ Reminder annulé pour %s", member.display_name)
+    async def restore_reminders(self):
+        """Reload reminders from Redis on startup."""
+        if not getattr(self.bot, "redis", None):
+            return
 
-    # --- Listener : déclenche uniquement sur summon claim ---
+        keys = await self.bot.redis.keys("reminder:summon:*")
+        now = int(time.time())
+
+        for key in keys:
+            user_id = int(key.split(":")[-1])
+            data = await self.bot.redis.hgetall(key)
+            if not data:
+                continue
+
+            expire_at = int(data.get("expire_at", 0))
+            channel_id = int(data.get("channel_id", 0))
+            remaining = expire_at - now
+            if remaining <= 0:
+                await self.bot.redis.delete(key)
+                continue
+
+            guild = self.bot.get_guild(self.bot.guild_id)  # set guild_id in main
+            if not guild:
+                continue
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+
+            async def reminder_task():
+                try:
+                    await asyncio.sleep(remaining)
+                    await channel.send(
+                        f"⏰ {member.mention} your summon cooldown is over, you can summon again!"
+                    )
+                finally:
+                    self.active_reminders.pop(user_id, None)
+                    await self.bot.redis.delete(key)
+
+            task = asyncio.create_task(reminder_task())
+            self.active_reminders[user_id] = task
+            log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
+
+    # --- Listener: trigger only on summon claim (not auto summon) ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
@@ -55,7 +100,6 @@ class Reminder(commands.Cog):
         embed = after.embeds[0]
         title = (embed.title or "").lower()
 
-        # On ne déclenche PAS sur auto summon
         if "summon claimed" in title and "auto summon claimed" not in title:
             if not embed.description:
                 return
@@ -69,9 +113,10 @@ class Reminder(commands.Cog):
             if not member:
                 return
 
-            # 👉 Ici on démarre le reminder dans le channel du message
             await self.start_reminder(member, after.channel)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Reminder(bot))
+    cog = Reminder(bot)
+    await bot.add_cog(cog)
+    await cog.restore_reminders()
