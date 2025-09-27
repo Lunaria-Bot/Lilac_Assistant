@@ -1,17 +1,23 @@
+import os
 import logging
 import asyncio
 import time
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 log = logging.getLogger("cog-reminder")
 
 COOLDOWN_SECONDS = 1800  # 30 minutes
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # ✅ use env var
 
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.active_reminders = {}
+        self.cleanup_task.start()  # start background cleanup
+
+    def cog_unload(self):
+        self.cleanup_task.cancel()
 
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
         """Start a summon reminder and persist it in Redis with channel info."""
@@ -22,7 +28,6 @@ class Reminder(commands.Cog):
 
         if getattr(self.bot, "redis", None):
             expire_at = int(time.time()) + COOLDOWN_SECONDS
-            # Store both expiry and channel_id
             await self.bot.redis.hset(
                 f"reminder:summon:{user_id}",
                 mapping={"expire_at": expire_at, "channel_id": channel.id}
@@ -67,7 +72,7 @@ class Reminder(commands.Cog):
                 await self.bot.redis.delete(key)
                 continue
 
-            guild = self.bot.get_guild(self.bot.guild_id)  # set guild_id in main
+            guild = self.bot.get_guild(GUILD_ID)
             if not guild:
                 continue
             member = guild.get_member(user_id)
@@ -75,7 +80,7 @@ class Reminder(commands.Cog):
                 continue
             channel = guild.get_channel(channel_id)
             if not channel:
-                continue
+                continue  # ✅ silently skip if channel missing
 
             async def reminder_task():
                 try:
@@ -90,6 +95,33 @@ class Reminder(commands.Cog):
             task = asyncio.create_task(reminder_task())
             self.active_reminders[user_id] = task
             log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
+
+    # --- Background cleanup loop ---
+    @tasks.loop(minutes=10)
+    async def cleanup_task(self):
+        """Periodically remove expired reminders from Redis."""
+        if not getattr(self.bot, "redis", None):
+            return
+
+        keys = await self.bot.redis.keys("reminder:summon:*")
+        now = int(time.time())
+        removed = 0
+
+        for key in keys:
+            data = await self.bot.redis.hgetall(key)
+            if not data:
+                continue
+            expire_at = int(data.get("expire_at", 0))
+            if expire_at and expire_at <= now:
+                await self.bot.redis.delete(key)
+                removed += 1
+
+        if removed:
+            log.info("🧹 Cleanup removed %s expired reminders", removed)
+
+    @cleanup_task.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
 
     # --- Listener: trigger only on summon claim (not auto summon) ---
     @commands.Cog.listener()
