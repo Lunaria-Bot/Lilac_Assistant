@@ -197,6 +197,42 @@ class Leaderboard(commands.Cog):
                 member.display_name,
                 "Auto Summon Claimed" if "auto summon claimed" in (title + desc + footer) else "Summon Claimed"
             )
+    # --- Debug listeners ---
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.id != MAZOKU_BOT_ID:
+            return
+        if not message.guild or message.guild.id != GUILD_ID:
+            return
+        if not message.embeds:
+            return
+
+        log.info("🆕 on_message triggered for %s", message.id)
+        for i, e in enumerate(message.embeds):
+            log.info("Embed %s: title=%s | desc=%s | footer=%s | fields=%s",
+                     i,
+                     e.title,
+                     e.description,
+                     e.footer.text if e.footer else "",
+                     [f"{f.name}:{f.value}" for f in e.fields])
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if after.author.id != MAZOKU_BOT_ID:
+            return
+        if not after.guild or after.guild.id != GUILD_ID:
+            return
+        if not after.embeds:
+            return
+
+        log.info("✏️ on_message_edit triggered for %s", after.id)
+        for i, e in enumerate(after.embeds):
+            log.info("Embed %s: title=%s | desc=%s | footer=%s | fields=%s",
+                     i,
+                     e.title,
+                     e.description,
+                     e.footer.text if e.footer else "",
+                     [f"{f.name}:{f.value}" for f in e.fields])
 
 
 # Obligatoire pour charger l’extension
