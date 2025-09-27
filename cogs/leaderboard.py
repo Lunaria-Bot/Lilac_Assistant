@@ -16,7 +16,7 @@ def is_admin():
         return interaction.user.guild_permissions.administrator
     return app_commands.check(predicate)
 
-# --- View avec Select ---
+# --- View with Select ---
 class LeaderboardView(discord.ui.View):
     def __init__(self, bot, guild):
         super().__init__(timeout=120)
@@ -24,7 +24,7 @@ class LeaderboardView(discord.ui.View):
         self.guild = guild
 
     @discord.ui.select(
-        placeholder="Choisis une catégorie",
+        placeholder="Choose a category",
         options=[
             discord.SelectOption(label="All time", value="all"),
             discord.SelectOption(label="Monthly", value="monthly"),
@@ -73,7 +73,7 @@ class LeaderboardView(discord.ui.View):
             description="\n".join(lines) if lines else "No entries yet.",
             color=discord.Color.gold()
         )
-        embed.set_footer(text=f"Demandé par {user.display_name}")
+        embed.set_footer(text=f"Requested by {user.display_name}")
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
         return embed
@@ -90,7 +90,7 @@ class Leaderboard(commands.Cog):
         }
         log.info("⚙️ Leaderboard cog loaded with GUILD_ID=%s, MAZOKU_BOT_ID=%s", GUILD_ID, MAZOKU_BOT_ID)
 
-    # --- Commande principale ---
+    # --- Main command ---
     @app_commands.command(name="leaderboard", description="View the leaderboard")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.checks.cooldown(1, 120.0, key=lambda i: (i.user.id))
@@ -104,19 +104,19 @@ class Leaderboard(commands.Cog):
     async def leaderboard_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
-                f"⏳ Tu dois attendre encore {int(error.retry_after)}s avant de relancer `/leaderboard`.",
+                f"⏳ You must wait {int(error.retry_after)}s before using `/leaderboard` again.",
                 ephemeral=True
             )
 
-    # --- Commandes Admin avec menus déroulants ---
-    @app_commands.command(name="leaderboard-reset", description="Reset des scores (admin)")
+    # --- Admin commands ---
+    @app_commands.command(name="leaderboard-reset", description="Reset scores (admin)")
     @app_commands.choices(
         category=[
             app_commands.Choice(name="All", value="all"),
             app_commands.Choice(name="Monthly", value="monthly"),
             app_commands.Choice(name="AutoSummon", value="autosummon"),
             app_commands.Choice(name="Summon", value="summon"),
-            app_commands.Choice(name="Tout", value="all_keys"),
+            app_commands.Choice(name="Everything", value="all_keys"),
         ]
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -130,7 +130,7 @@ class Leaderboard(commands.Cog):
         if category.value == "all_keys":
             for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
                 await self.bot.redis.delete(key)
-            msg = "🧹 Tous les scores ont été réinitialisés."
+            msg = "🧹 All scores have been reset."
         else:
             key_map = {
                 "all": "leaderboard",
@@ -139,7 +139,7 @@ class Leaderboard(commands.Cog):
                 "summon": "activity:summon",
             }
             await self.bot.redis.delete(key_map[category.value])
-            msg = f"🧹 Catégorie `{category.value}` réinitialisée."
+            msg = f"🧹 Category `{category.value}` has been reset."
 
         await interaction.followup.send(msg, ephemeral=True)
 
@@ -147,13 +147,13 @@ class Leaderboard(commands.Cog):
     async def leaderboard_reset_error(self, interaction: discord.Interaction, error):
         try:
             if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Erreur pendant le reset.", ephemeral=True)
+                await interaction.response.send_message("❌ Error while resetting.", ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send("❌ Erreur pendant le reset.", ephemeral=True)
+            await interaction.followup.send("❌ Error while resetting.", ephemeral=True)
 
-    @app_commands.command(name="leaderboard-pause", description="Pause/reprise des compteurs (admin)")
+    @app_commands.command(name="leaderboard-pause", description="Pause or resume counters (admin)")
     @app_commands.choices(
         category=[
             app_commands.Choice(name="All", value="all"),
@@ -177,14 +177,14 @@ class Leaderboard(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         if category.value not in self.paused:
-            await interaction.followup.send(f"❌ Catégorie inconnue: {category.value}", ephemeral=True)
+            await interaction.followup.send(f"❌ Unknown category: {category.value}", ephemeral=True)
             return
 
         self.paused[category.value] = (state.value == "pause")
         log.info("Pause command: category=%s state=%s", category.value, state.value)
 
         await interaction.followup.send(
-            f"⏸️ `{category.value}` → {'pause' if self.paused[category.value] else 'reprise'}.",
+            f"⏸️ `{category.value}` → {'paused' if self.paused[category.value] else 'resumed'}.",
             ephemeral=True
         )
 
@@ -192,17 +192,17 @@ class Leaderboard(commands.Cog):
     async def leaderboard_pause_error(self, interaction: discord.Interaction, error):
         try:
             if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Erreur pendant la mise en pause.", ephemeral=True)
+                await interaction.response.send_message("❌ Error while pausing.", ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send("❌ Erreur pendant la mise en pause.", ephemeral=True)
+            await interaction.followup.send("❌ Error while pausing.", ephemeral=True)
 
-    @app_commands.command(name="leaderboard-debug", description="Voir les stats internes (admin)")
+    @app_commands.command(name="leaderboard-debug", description="View internal stats (admin)")
     @app_commands.choices(
         scope=[
-            app_commands.Choice(name="Résumé", value="summary"),
-            app_commands.Choice(name="Détail complet", value="full"),
+            app_commands.Choice(name="Summary", value="summary"),
+            app_commands.Choice(name="Full detail", value="full"),
         ]
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -227,9 +227,9 @@ class Leaderboard(commands.Cog):
         ]
 
         if scope.value == "summary":
-            msg = "🛠️ Debug (résumé):\n" + "\n".join(lines)
+            msg = "🛠️ Debug (summary):\n" + "\n".join(lines)
         else:
-            msg = "🛠️ Debug (détail complet):\n" + "\n".join(lines)
+            msg = "🛠️ Debug (full detail):\n" + "\n".join(lines)
 
         await interaction.followup.send(msg, ephemeral=True)
 
@@ -237,11 +237,11 @@ class Leaderboard(commands.Cog):
     async def leaderboard_debug_error(self, interaction: discord.Interaction, error):
         try:
             if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Commande réservée aux admins.", ephemeral=True)
+                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Erreur pendant le debug.", ephemeral=True)
+                await interaction.response.send_message("❌ Error during debug.", ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send("❌ Erreur pendant le debug.", ephemeral=True)
+            await interaction.followup.send("❌ Error during debug.", ephemeral=True)
 
     # --- Listeners (claims) ---
     @commands.Cog.listener()
@@ -256,7 +256,7 @@ class Leaderboard(commands.Cog):
         embed = after.embeds[0]
         title = (embed.title or "").lower()
         if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
-            # Trouver l'utilisateur mentionné dans la description
+            # Find the mentioned user in the description
             match = re.search(r"<@!?(\d+)>", embed.description or "")
             if not match:
                 return
@@ -267,14 +267,14 @@ class Leaderboard(commands.Cog):
             if not getattr(self.bot, "redis", None):
                 return
 
-            # Anti double-compte par message
+            # Prevent double count per message
             claim_key = f"claim:{after.id}:{user_id}"
             already = await self.bot.redis.get(claim_key)
             if already:
                 return
             await self.bot.redis.set(claim_key, "1", ex=86400)
 
-            # Compteurs
+            # Counters
             if not self.paused["monthly"]:
                 await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
                 await self.bot.redis.incr("activity:monthly:total")
