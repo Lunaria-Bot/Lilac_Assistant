@@ -60,8 +60,8 @@ class LeaderboardView(discord.ui.View):
         lines = []
         for i, (uid, score) in enumerate(sorted_data, start=1):
             member = guild.get_member(int(uid))
-            name = member.display_name if member else f"User {uid}"
-            lines.append(f"**{i}.** {name} — {score} pts")
+            mention = member.mention if member else f"<@{uid}>"
+            lines.append(f"**{i}.** {mention} — {score} pts")
 
         embed = discord.Embed(
             title=f"🏆 {category.title()} Leaderboard",
