@@ -62,9 +62,12 @@ class Leaderboard(commands.Cog):
     # --- Slash command /leaderboard ---
     @app_commands.command(name="leaderboard", description="View the leaderboard")
     async def leaderboard(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)  # 👈 évite Unknown interaction
+
         embed = await self.build_leaderboard_embed(interaction.guild, "all", interaction.user)
         view = LeaderboardView(self, interaction.guild, interaction.user)
-        await interaction.response.send_message(embed=embed, view=view)
+
+        await interaction.followup.send(embed=embed, view=view)
 
     # --- Build embed depending on mode ---
     async def build_leaderboard_embed(self, guild, mode: str, user):
@@ -102,41 +105,47 @@ class Leaderboard(commands.Cog):
             color=discord.Color.gold()
         )
         return embed
-
     # --- Admin commands ---
     @app_commands.command(name="leaderboard-pause", description="Pause a leaderboard category (Admin only)")
     @app_commands.describe(category="Which category to pause (all, monthly, autosummon, summon)")
     async def leaderboard_pause(self, interaction: discord.Interaction, category: str):
+        await interaction.response.defer(ephemeral=True)
+
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
         if category not in self.paused:
-            await interaction.response.send_message("⚠️ Unknown category.", ephemeral=True)
+            await interaction.followup.send("⚠️ Unknown category.", ephemeral=True)
             return
         self.paused[category] = True
-        await interaction.response.send_message(f"⏸️ Leaderboard category **{category}** paused.", ephemeral=True)
+        await interaction.followup.send(f"⏸️ Leaderboard category **{category}** paused.", ephemeral=True)
 
     @app_commands.command(name="leaderboard-resume", description="Resume a leaderboard category (Admin only)")
     @app_commands.describe(category="Which category to resume (all, monthly, autosummon, summon)")
     async def leaderboard_resume(self, interaction: discord.Interaction, category: str):
+        await interaction.response.defer(ephemeral=True)
+
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
         if category not in self.paused:
-            await interaction.response.send_message("⚠️ Unknown category.", ephemeral=True)
+            await interaction.followup.send("⚠️ Unknown category.", ephemeral=True)
             return
         self.paused[category] = False
-        await interaction.response.send_message(f"▶️ Leaderboard category **{category}** resumed.", ephemeral=True)
+        await interaction.followup.send(f"▶️ Leaderboard category **{category}** resumed.", ephemeral=True)
 
     @app_commands.command(name="leaderboard-reset", description="Reset a leaderboard category (Admin only)")
     @app_commands.describe(category="Which category to reset (all, monthly, autosummon, summon)")
     async def leaderboard_reset(self, interaction: discord.Interaction, category: str):
+        await interaction.response.defer(ephemeral=True)
+
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            await interaction.followup.send("❌ Admin only.", ephemeral=True)
             return
         if not self.bot.redis:
-            await interaction.response.send_message("❌ Redis not connected.", ephemeral=True)
+            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
             return
+
         if category == "all":
             await self.bot.redis.delete("leaderboard")
         elif category == "monthly":
@@ -147,9 +156,10 @@ class Leaderboard(commands.Cog):
         elif category == "summon":
             await self.bot.redis.delete("activity:summon")
         else:
-            await interaction.response.send_message("⚠️ Unknown category.", ephemeral=True)
+            await interaction.followup.send("⚠️ Unknown category.", ephemeral=True)
             return
-        await interaction.response.send_message(f"🔄 Leaderboard category **{category}** reset!", ephemeral=True)
+
+        await interaction.followup.send(f"🔄 Leaderboard category **{category}** reset!", ephemeral=True)
 
     # --- Events ---
     @commands.Cog.listener()
@@ -210,7 +220,7 @@ class Leaderboard(commands.Cog):
                         text_to_scan.append(field.name or "")
                         text_to_scan.append(field.value or "")
                 if embed.footer and embed.footer.text:
-                                       text_to_scan.append(embed.footer.text)
+                    text_to_scan.append(embed.footer.text)
 
                 for text in text_to_scan:
                     matches = EMOJI_REGEX.findall(text)
@@ -259,6 +269,6 @@ class Leaderboard(commands.Cog):
                 await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
 
 
-# Obligatoire pour charger l’extension (corrige NoEntryPointError)
+# Obligatoire pour charger l’extension
 async def setup(bot: commands.Bot):
     await bot.add_cog(Leaderboard(bot))
