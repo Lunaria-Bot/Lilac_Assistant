@@ -3,7 +3,7 @@ import logging
 import asyncio
 import discord
 from discord.ext import commands
-import aioredis
+import redis.asyncio as redis  # ✅ on utilise redis.asyncio
 
 # --- Logging ---
 logging.basicConfig(
@@ -30,7 +30,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def setup_hook():
     # Connexion Redis
     try:
-        bot.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+        bot.redis = redis.from_url(REDIS_URL, decode_responses=True)
+        await bot.redis.ping()  # test rapide
         log.info("✅ Connected to Redis at %s", REDIS_URL)
     except Exception as e:
         bot.redis = None
