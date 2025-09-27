@@ -200,4 +200,3 @@ class Leaderboard(commands.Cog):
 # Obligatoire pour charger l’extension
 async def setup(bot: commands.Bot):
     await bot.add_cog(Leaderboard(bot))
-``
