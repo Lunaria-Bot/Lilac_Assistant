@@ -204,4 +204,61 @@ class Leaderboard(commands.Cog):
             # All time (points par rareté)
             if not self.paused["all"]:
                 rarity_points = 0
-                text
+                text_to_scan = [embed.title or "", embed.description or ""]
+                if embed.fields:
+                    for field in embed.fields:
+                        text_to_scan.append(field.name or "")
+                        text_to_scan.append(field.value or "")
+                if embed.footer and embed.footer.text:
+                                       text_to_scan.append(embed.footer.text)
+
+                for text in text_to_scan:
+                    matches = EMOJI_REGEX.findall(text)
+                    for emote_id in matches:
+                        if emote_id in RARITY_POINTS:
+                            rarity_points = RARITY_POINTS[emote_id]
+                            break
+                    if rarity_points:
+                        break
+
+                if rarity_points:
+                    await self.bot.redis.hincrby("leaderboard", str(user_id), rarity_points)
+                    log.info("🏅 %s gains %s points (All time)", member.display_name, rarity_points)
+
+        # Summon Claimed (hors auto summon)
+        elif "summon claimed" in title:
+            match = re.search(r"<@!?(\d+)>", embed.description or "")
+            if not match and embed.fields:
+                for field in embed.fields:
+                    match = re.search(r"<@!?(\d+)>", field.value or "")
+                    if match:
+                        break
+            if not match and embed.footer and embed.footer.text:
+                match = re.search(r"<@!?(\d+)>", embed.footer.text)
+            if not match:
+                return
+
+            user_id = int(match.group(1))
+            member = after.guild.get_member(user_id)
+            if not member:
+                return
+
+            claim_key = f"claim:{after.id}:{user_id}"
+            already = await self.bot.redis.get(claim_key)
+            if already:
+                return
+            await self.bot.redis.set(claim_key, "1", ex=86400)
+
+            # Monthly
+            if not self.paused["monthly"]:
+                await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
+                await self.bot.redis.incr("activity:monthly:total")
+
+            # Summon
+            if not self.paused["summon"]:
+                await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
+
+
+# Obligatoire pour charger l’extension (corrige NoEntryPointError)
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Leaderboard(bot))
