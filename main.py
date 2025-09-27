@@ -38,7 +38,7 @@ async def setup_hook():
         log.error("❌ Redis connection failed: %s", e)
 
     # Charger les cogs
-    for cog in ["cogs.leaderboard", "cogs.reminder", "cogs.log","cogs.reminder"]:
+    for cog in ["cogs.leaderboard", "cogs.reminder", "cogs.log","cog-tasks"]:
         try:
             await bot.load_extension(cog)
             log.info("✅ Loaded cog: %s", cog)
