@@ -36,7 +36,6 @@ class Leaderboard(commands.Cog):
             await interaction.followup.send("⚠️ Leaderboard is empty.", ephemeral=True)
             return
 
-        # Trier par score
         sorted_data = sorted(data.items(), key=lambda x: int(x[1]), reverse=True)
         lines = []
         for i, (uid, score) in enumerate(sorted_data[:10], start=1):
@@ -136,7 +135,6 @@ class Leaderboard(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         log.info("📩 Message reçu de %s (%s): %s", message.author, message.author.id, message.content)
-
         if message.embeds:
             for i, e in enumerate(message.embeds):
                 log.info("Embed %s:", i)
@@ -146,6 +144,55 @@ class Leaderboard(commands.Cog):
                 if e.fields:
                     for f in e.fields:
                         log.info("  Field: %s = %s", f.name, f.value)
+
+    # --- Détection des claims sur édition ---
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if after.author.id != MAZOKU_BOT_ID:
+            return
+        if not after.guild or after.guild.id != GUILD_ID:
+            return
+        if not after.embeds:
+            return
+
+        embed = after.embeds[0]
+        title = (embed.title or "").lower()
+
+        if "card claimed" in title or "auto summon claimed" in title:
+            log.info("✏️ Claim detected in edited message %s", after.id)
+
+            match = re.search(r"<@!?(\d+)>", embed.description or "")
+            if not match:
+                log.warning("⚠️ Aucun joueur trouvé dans l’embed.")
+                return
+
+            user_id = int(match.group(1))
+            member = after.guild.get_member(user_id)
+            if not member:
+                log.warning("⚠️ Impossible de trouver le membre %s dans le serveur.", user_id)
+                return
+
+            claim_key = f"claim:{after.id}:{user_id}"
+            already = await self.bot.redis.get(claim_key)
+            if already:
+                return
+            await self.bot.redis.set(claim_key, "1", ex=86400)
+
+            if not self.paused["monthly"]:
+                await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
+                await self.bot.redis.incr("activity:monthly:total")
+
+            if "auto summon claimed" in title:
+                if not self.paused["autosummon"]:
+                    await self.bot.redis.hincrby("activity:autosummon", str(user_id), 1)
+            else:
+                if not self.paused["summon"]:
+                    await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
+
+            if not self.paused["all"]:
+                await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
+
+            log.info("🏅 %s gained +1 point from %s", member.display_name, embed.title)
 
 
 # Obligatoire pour charger l’extension
