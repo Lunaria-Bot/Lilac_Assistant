@@ -8,30 +8,30 @@ from discord.ext import commands, tasks
 log = logging.getLogger("cog-reminder")
 
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minutes
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # ✅ use env var
-REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))  # ✅ default 10 min
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
 SUMMON_COMMAND_ID = os.getenv("SUMMON_COMMAND_ID")  # optional: use </summon:ID> mention if provided
+
+DUCK_EMOJI = "<a:lilac_duckwait:1300920526805663856>"
 
 
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.active_reminders = {}
-        self.cleanup_task.start()  # start background cleanup
+        self.cleanup_task.start()
 
     def cog_unload(self):
         self.cleanup_task.cancel()
 
     def get_summon_text(self) -> str:
-        """Return a command mention if ID is provided, otherwise plain /summon."""
         if SUMMON_COMMAND_ID and SUMMON_COMMAND_ID.isdigit():
             return f"</summon:{SUMMON_COMMAND_ID}>"
         return "/summon"
 
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
-        """Send a plain text reminder message with a real user ping and command mention."""
         summon_text = self.get_summon_text()
-        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
+        content = f"⏱️ {member.mention}, your {summon_text} is ready again! {DUCK_EMOJI}"
         try:
             await channel.send(
                 content,
@@ -41,9 +41,7 @@ class Reminder(commands.Cog):
             log.warning("❌ Cannot send reminder in %s", channel.name)
 
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
-        """Start a summon reminder and persist it in Redis with channel info."""
         user_id = member.id
-
         if user_id in self.active_reminders:
             return
 
@@ -68,7 +66,6 @@ class Reminder(commands.Cog):
         log.info("▶️ Reminder started for %s in %s", member.display_name, channel.name)
 
     async def restore_reminders(self):
-        """Reload reminders from Redis on startup."""
         if not getattr(self.bot, "redis", None):
             return
 
@@ -96,7 +93,7 @@ class Reminder(commands.Cog):
                 continue
             channel = guild.get_channel(channel_id)
             if not channel:
-                continue  # ✅ silently skip if channel missing
+                continue
 
             async def reminder_task():
                 try:
@@ -110,10 +107,8 @@ class Reminder(commands.Cog):
             self.active_reminders[user_id] = task
             log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
 
-    # --- Background cleanup loop ---
     @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
     async def cleanup_task(self):
-        """Periodically remove expired reminders from Redis."""
         if not getattr(self.bot, "redis", None):
             return
 
@@ -137,7 +132,6 @@ class Reminder(commands.Cog):
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
 
-    # --- Listener: trigger only on summon claim (not auto summon) ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
