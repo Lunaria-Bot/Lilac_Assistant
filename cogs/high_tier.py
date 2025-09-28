@@ -11,17 +11,25 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 HIGH_TIER_ROLE_ID = int(os.getenv("HIGH_TIER_ROLE_ID", "0"))
 HIGH_TIER_COOLDOWN = int(os.getenv("HIGH_TIER_COOLDOWN", "300"))  # default 5 min
 
-# Emoji IDs mapped to rarities
+# Emoji IDs mapped to rarities (for detection in embeds)
 RARITY_EMOJIS = {
     "1342202597389373530": "SR",
     "1342202212948115510": "SSR",
     "1342202203515125801": "UR",
 }
 
+# Custom animated emojis for display in pings
+RARITY_CUSTOM_EMOJIS = {
+    "SR": "<a:SuperRare:1342208034482425936>",
+    "SSR": "<a:SuperSuperRare:1342208039918370857>",
+    "UR": "<a:UltraRare:1342208044351623199>",
+}
+
+# Messages with placeholders for emojis
 RARITY_MESSAGES = {
-    "SR":  "🌸 A Super Rare Flower just bloomed! Catch it!",
-    "SSR": "🌸 A Super Super Rare Flower just bloomed! Catch it!",
-    "UR":  "🌸 An Ultra Rare Flower just bloomed! Grab it!",
+    "SR":  "{emoji} has summoned, claim it!",
+    "SSR": "{emoji} has summoned, claim it!",
+    "UR":  "{emoji} has summoned, claim it!!",
 }
 
 # Define rarity priority (higher = more important)
@@ -169,7 +177,8 @@ class HighTier(commands.Cog):
         if found_rarity:
             role = after.guild.get_role(HIGH_TIER_ROLE_ID)
             if role:
-                msg = RARITY_MESSAGES.get(found_rarity, f"A {found_rarity} flower appeared!")
+                emoji = RARITY_CUSTOM_EMOJIS.get(found_rarity, "🌸")
+                msg = RARITY_MESSAGES[found_rarity].format(emoji=emoji)
                 await after.channel.send(f"{msg}\n🔥 {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
                 # ✅ Mark as processed with timestamp
