@@ -9,6 +9,7 @@ log = logging.getLogger("cog-reminder")
 
 COOLDOWN_SECONDS = 1800  # 30 minutes
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # ✅ use env var
+REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))  # ✅ default 10 min
 
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -101,7 +102,7 @@ class Reminder(commands.Cog):
             log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
 
     # --- Background cleanup loop ---
-    @tasks.loop(minutes=10)
+    @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
     async def cleanup_task(self):
         """Periodically remove expired reminders from Redis."""
         if not getattr(self.bot, "redis", None):
