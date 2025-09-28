@@ -138,7 +138,7 @@ class Reminder(commands.Cog):
         await self.bot.wait_until_ready()
 
     # --- Listener: trigger only on summon claim (not auto summon) ---
-    @commands.Cog.listener())
+    @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
             return
