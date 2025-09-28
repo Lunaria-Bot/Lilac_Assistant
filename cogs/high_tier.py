@@ -24,7 +24,7 @@ RARITY_MESSAGES = {
     "UR":  "🌸 An Ultra Rare Flower just bloomed! Grab it!",
 }
 
-# Define rarity priority (higher index = higher priority)
+# Define rarity priority (higher = more important)
 RARITY_PRIORITY = {"SR": 1, "SSR": 2, "UR": 3}
 
 class HighTier(commands.Cog):
@@ -113,14 +113,20 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to remove the role.", ephemeral=True)
 
-    # --- Listener: detect AUTO Summon embeds with rarity emojis ---
+    # --- Listener: detect summon embeds with rarity emojis ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
             return
 
         embed = after.embeds[0]
+        title = (embed.title or "").lower()
         desc = (embed.description or "")
+
+        # ✅ Only trigger on summon spawn, not claims
+        if "claim" in title:
+            log.debug("🔎 Skipped High Tier check: claim embed detected in %s", after.channel.name)
+            return
 
         found_rarity = None
         highest_priority = 0
@@ -138,6 +144,8 @@ class HighTier(commands.Cog):
                 msg = RARITY_MESSAGES.get(found_rarity, f"A {found_rarity} flower appeared!")
                 await after.channel.send(f"{msg}\n🔥 {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
+        else:
+            log.debug("🔎 Skipped High Tier ping: no SR/SSR/UR found in %s", after.channel.name)
 
 
 async def setup(bot: commands.Bot):
