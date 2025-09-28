@@ -19,9 +19,9 @@ RARITY_EMOJIS = {
 }
 
 RARITY_MESSAGES = {
-    "SR":  "🌸 A Super Rare just spawned! Catch it!",
-    "SSR": "🌸 A Super Super Rare just spawned! Catch it!",
-    "UR":  "🌸 An Ultra Rare just spawned! Catch it!",
+    "SR":  "🌸 A Super Rare Flower just bloomed! Catch it!",
+    "SSR": "🌸 A Super Super Rare Flower just bloomed! Catch it!",
+    "UR":  "🌸 An Ultra Rare Flower just bloomed! Grab it!",
 }
 
 # Define rarity priority (higher = more important)
@@ -139,7 +139,7 @@ class HighTier(commands.Cog):
     async def before_cleanup_triggered(self):
         await self.bot.wait_until_ready()
 
-    # --- Listener: detect summon embeds with rarity emojis ---
+    # --- Listener: detect Auto Summon embeds with rarity emojis ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
@@ -153,9 +153,9 @@ class HighTier(commands.Cog):
         title = (embed.title or "").lower()
         desc = (embed.description or "")
 
-        # ✅ Only trigger on summon spawn, not claims
-        if "claim" in title:
-            log.debug("🔎 Skipped High Tier check: claim embed detected in %s", after.channel.name)
+        # ✅ Only trigger on Auto Summon
+        if "auto summon" not in title:
+            log.debug("🔎 Skipped High Tier check: not an Auto Summon in %s", after.channel.name)
             return
 
         found_rarity = None
@@ -172,7 +172,7 @@ class HighTier(commands.Cog):
                 msg = RARITY_MESSAGES.get(found_rarity, f"A {found_rarity} flower appeared!")
                 await after.channel.send(f"{msg}\n🔥 {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
-                # ✅ mark as processed with timestamp
+                # ✅ Mark as processed with timestamp
                 self.triggered_messages[after.id] = time.time()
         else:
             log.debug("🔎 Skipped High Tier ping: no SR/SSR/UR found in %s", after.channel.name)
