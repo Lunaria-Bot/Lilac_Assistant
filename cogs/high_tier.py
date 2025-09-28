@@ -9,37 +9,36 @@ log = logging.getLogger("cog-high-tier")
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 HIGH_TIER_ROLE_ID = int(os.getenv("HIGH_TIER_ROLE_ID", "0"))
-HIGH_TIER_COOLDOWN = int(os.getenv("HIGH_TIER_COOLDOWN", "300"))  # default 5 min
+HIGH_TIER_COOLDOWN = int(os.getenv("HIGH_TIER_COOLDOWN", "300"))
 
-# Emoji IDs mapped to rarities (for detection in embeds)
+# IDs détectés dans les embeds de Mudae
 RARITY_EMOJIS = {
     "1342202597389373530": "SR",
     "1342202212948115510": "SSR",
     "1342202203515125801": "UR",
 }
 
-# Custom animated emojis for display in pings
+# Émojis animés custom pour l’affichage
 RARITY_CUSTOM_EMOJIS = {
     "SR": "<a:SuperRare:1342208034482425936>",
     "SSR": "<a:SuperSuperRare:1342208039918370857>",
     "UR": "<a:UltraRare:1342208044351623199>",
 }
 
-# Messages with placeholders for emojis
+# Messages de rareté (mis à jour selon ta demande)
 RARITY_MESSAGES = {
     "SR":  "{emoji} has summoned, claim it!",
     "SSR": "{emoji} has summoned, claim it!",
     "UR":  "{emoji} has summoned, claim it!!",
 }
 
-# Define rarity priority (higher = more important)
+# Priorité des raretés
 RARITY_PRIORITY = {"SR": 1, "SSR": 2, "UR": 3}
 
 
 class HighTier(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # ✅ store message_id -> timestamp
         self.triggered_messages = {}
         self.cleanup_triggered.start()
 
@@ -47,24 +46,18 @@ class HighTier(commands.Cog):
         self.cleanup_triggered.cancel()
 
     async def check_cooldown(self, user_id: int) -> int:
-        """Check Redis for cooldown. Returns remaining seconds if still on cooldown, else 0."""
         if not getattr(self.bot, "redis", None):
-            return 0  # fallback: no cooldown if Redis not connected
-
+            return 0
         key = f"cooldown:high-tier:{user_id}"
         last_ts = await self.bot.redis.get(key)
         now = int(time.time())
-
         if last_ts:
             elapsed = now - int(last_ts)
             if elapsed < HIGH_TIER_COOLDOWN:
                 return HIGH_TIER_COOLDOWN - elapsed
-
-        # Not on cooldown → update timestamp
         await self.bot.redis.set(key, str(now))
         return 0
 
-    # --- Slash command to self-assign High Tier role ---
     @app_commands.command(name="high-tier", description="Get the High Tier role to be notified of rare flowers")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def high_tier(self, interaction: discord.Interaction):
@@ -75,17 +68,14 @@ class HighTier(commands.Cog):
                 ephemeral=True
             )
             return
-
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
             await interaction.response.send_message("❌ High Tier role not found.", ephemeral=True)
             return
-
         member = interaction.user
         if role in member.roles:
             await interaction.response.send_message("✅ You already have the High Tier role.", ephemeral=True)
             return
-
         try:
             await member.add_roles(role, reason="User opted in for High Tier notifications")
             await interaction.response.send_message(
@@ -96,7 +86,6 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to assign the role.", ephemeral=True)
 
-    # --- Slash command to remove High Tier role ---
     @app_commands.command(name="high-tier-remove", description="Remove the High Tier role and stop notifications")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def high_tier_remove(self, interaction: discord.Interaction):
@@ -107,17 +96,14 @@ class HighTier(commands.Cog):
                 ephemeral=True
             )
             return
-
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
             await interaction.response.send_message("❌ High Tier role not found.", ephemeral=True)
             return
-
         member = interaction.user
         if role not in member.roles:
             await interaction.response.send_message("ℹ️ You don’t have the High Tier role.", ephemeral=True)
             return
-
         try:
             await member.remove_roles(role, reason="User opted out of High Tier notifications")
             await interaction.response.send_message(
@@ -128,13 +114,10 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to remove the role.", ephemeral=True)
 
-    # --- Background cleanup loop ---
     @tasks.loop(minutes=30)
     async def cleanup_triggered(self):
-        """Remove old message IDs from triggered_messages to prevent memory bloat."""
         now = time.time()
         before = len(self.triggered_messages)
-        # keep only entries from the last 6 hours
         self.triggered_messages = {
             mid: ts for mid, ts in self.triggered_messages.items()
             if now - ts < 6 * 3600
@@ -147,13 +130,10 @@ class HighTier(commands.Cog):
     async def before_cleanup_triggered(self):
         await self.bot.wait_until_ready()
 
-    # --- Listener: detect Auto Summon embeds with rarity emojis ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
             return
-
-        # ✅ Skip if already processed
         if after.id in self.triggered_messages:
             return
 
@@ -161,9 +141,7 @@ class HighTier(commands.Cog):
         title = (embed.title or "").lower()
         desc = (embed.description or "")
 
-        # ✅ Only trigger on Auto Summon
         if "auto summon" not in title:
-            log.debug("🔎 Skipped High Tier check: not an Auto Summon in %s", after.channel.name)
             return
 
         found_rarity = None
@@ -177,14 +155,12 @@ class HighTier(commands.Cog):
         if found_rarity:
             role = after.guild.get_role(HIGH_TIER_ROLE_ID)
             if role:
+                # ✅ Marquer comme traité AVANT d’envoyer
+                self.triggered_messages[after.id] = time.time()
                 emoji = RARITY_CUSTOM_EMOJIS.get(found_rarity, "🌸")
                 msg = RARITY_MESSAGES[found_rarity].format(emoji=emoji)
                 await after.channel.send(f"{msg}\n🔥 {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
-                # ✅ Mark as processed with timestamp
-                self.triggered_messages[after.id] = time.time()
-        else:
-            log.debug("🔎 Skipped High Tier ping: no SR/SSR/UR found in %s", after.channel.name)
 
 
 async def setup(bot: commands.Bot):
