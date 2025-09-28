@@ -3,6 +3,7 @@ import logging
 import asyncio
 import time
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 log = logging.getLogger("cog-reminder")
@@ -11,8 +12,6 @@ COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minu
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
 SUMMON_COMMAND_ID = os.getenv("SUMMON_COMMAND_ID")  # optional: use </summon:ID> mention if provided
-
-DUCK_EMOJI = "<a:lilac_duckwait:1300920526805663856>"
 
 
 class Reminder(commands.Cog):
@@ -31,7 +30,7 @@ class Reminder(commands.Cog):
 
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
         summon_text = self.get_summon_text()
-        content = f"⏱️ {member.mention}, your {summon_text} is ready again! {DUCK_EMOJI}"
+        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
         try:
             await channel.send(
                 content,
@@ -40,7 +39,46 @@ class Reminder(commands.Cog):
         except discord.Forbidden:
             log.warning("❌ Cannot send reminder in %s", channel.name)
 
+    # --- Slash command /reminder ---
+    @app_commands.command(name="reminder", description="Enable or disable summon reminders")
+    @app_commands.describe(state="Enable or disable the summon reminder")
+    @app_commands.choices(
+        state=[
+            app_commands.Choice(name="On", value="on"),
+            app_commands.Choice(name="Off", value="off"),
+        ]
+    )
+    async def reminder_cmd(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
+        """Slash command to toggle summon reminders for the user."""
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id if interaction.guild else 0
+
+        if not getattr(self.bot, "redis", None):
+            await interaction.response.send_message("⚠️ Redis not available, cannot save reminder settings.", ephemeral=True)
+            return
+
+        key = f"reminder:settings:{guild_id}:{user_id}:summon"
+
+        if state.value == "on":
+            await self.bot.redis.set(key, "1")
+            await interaction.response.send_message("✅ Summon reminder has been **enabled**.", ephemeral=True)
+        else:
+            await self.bot.redis.delete(key)
+            await interaction.response.send_message("❌ Summon reminder has been **disabled**.", ephemeral=True)
+
+    # --- Helper: check if reminder is enabled for a user ---
+    async def is_reminder_enabled(self, member: discord.Member) -> bool:
+        if not getattr(self.bot, "redis", None):
+            return True  # fallback: enabled by default
+        key = f"reminder:settings:{member.guild.id}:{member.id}:summon"
+        return await self.bot.redis.get(key) == "1"
+
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        """Start a summon reminder only if enabled for the user."""
+        if not await self.is_reminder_enabled(member):
+            log.info("⏸️ Reminder disabled for %s, skipping.", member.display_name)
+            return
+
         user_id = member.id
         if user_id in self.active_reminders:
             return
@@ -55,7 +93,8 @@ class Reminder(commands.Cog):
         async def reminder_task():
             try:
                 await asyncio.sleep(COOLDOWN_SECONDS)
-                await self.send_reminder_message(member, channel)
+                if await self.is_reminder_enabled(member):
+                    await self.send_reminder_message(member, channel)
             finally:
                 self.active_reminders.pop(user_id, None)
                 if getattr(self.bot, "redis", None):
@@ -98,7 +137,8 @@ class Reminder(commands.Cog):
             async def reminder_task():
                 try:
                     await asyncio.sleep(remaining)
-                    await self.send_reminder_message(member, channel)
+                    if await self.is_reminder_enabled(member):
+                        await self.send_reminder_message(member, channel)
                 finally:
                     self.active_reminders.pop(user_id, None)
                     await self.bot.redis.delete(key)
