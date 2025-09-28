@@ -21,13 +21,9 @@ class Reminder(commands.Cog):
         self.cleanup_task.cancel()
 
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
-        """Send a styled reminder message (slash-like)."""
-        embed = discord.Embed(
-            description=f"⏱️ {member.mention}, ton `/summon` est de nouveau disponible !",
-            color=discord.Color.green()
-        )
+        """Send a plain text reminder message (ping + /summon)."""
         try:
-            await channel.send(embed=embed)
+            await channel.send(f"⏱️ {member.mention}, ton `/summon` est de nouveau disponible !")
         except discord.Forbidden:
             log.warning("❌ Cannot send reminder in %s", channel.name)
 
