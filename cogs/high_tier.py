@@ -3,7 +3,7 @@ import time
 import logging
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 log = logging.getLogger("cog-high-tier")
 
@@ -19,17 +19,24 @@ RARITY_EMOJIS = {
 }
 
 RARITY_MESSAGES = {
-    "SR":  "🌸 A Super Rare Flower just bloomed! Catch it!",
-    "SSR": "🌸 A Super Super Rare Flower just bloomed! Catch it!",
-    "UR":  "🌸 An Ultra Rare Flower just bloomed! Grab it!",
+    "SR":  "🌸 A Super Rare just spawned! Catch it!",
+    "SSR": "🌸 A Super Super Rare just spawned! Catch it!",
+    "UR":  "🌸 An Ultra Rare just spawned! Catch it!",
 }
 
 # Define rarity priority (higher = more important)
 RARITY_PRIORITY = {"SR": 1, "SSR": 2, "UR": 3}
 
+
 class HighTier(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # ✅ store message_id -> timestamp
+        self.triggered_messages = {}
+        self.cleanup_triggered.start()
+
+    def cog_unload(self):
+        self.cleanup_triggered.cancel()
 
     async def check_cooldown(self, user_id: int) -> int:
         """Check Redis for cooldown. Returns remaining seconds if still on cooldown, else 0."""
@@ -113,10 +120,33 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to remove the role.", ephemeral=True)
 
+    # --- Background cleanup loop ---
+    @tasks.loop(minutes=30)
+    async def cleanup_triggered(self):
+        """Remove old message IDs from triggered_messages to prevent memory bloat."""
+        now = time.time()
+        before = len(self.triggered_messages)
+        # keep only entries from the last 6 hours
+        self.triggered_messages = {
+            mid: ts for mid, ts in self.triggered_messages.items()
+            if now - ts < 6 * 3600
+        }
+        after = len(self.triggered_messages)
+        if before != after:
+            log.debug("🧹 Cleaned triggered_messages: %s → %s entries", before, after)
+
+    @cleanup_triggered.before_loop
+    async def before_cleanup_triggered(self):
+        await self.bot.wait_until_ready()
+
     # --- Listener: detect summon embeds with rarity emojis ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
+            return
+
+        # ✅ Skip if already processed
+        if after.id in self.triggered_messages:
             return
 
         embed = after.embeds[0]
@@ -130,8 +160,6 @@ class HighTier(commands.Cog):
 
         found_rarity = None
         highest_priority = 0
-
-        # Look for emoji IDs in the embed description
         for emoji_id, rarity in RARITY_EMOJIS.items():
             if str(emoji_id) in desc:
                 if RARITY_PRIORITY[rarity] > highest_priority:
@@ -144,6 +172,8 @@ class HighTier(commands.Cog):
                 msg = RARITY_MESSAGES.get(found_rarity, f"A {found_rarity} flower appeared!")
                 await after.channel.send(f"{msg}\n🔥 {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
+                # ✅ mark as processed with timestamp
+                self.triggered_messages[after.id] = time.time()
         else:
             log.debug("🔎 Skipped High Tier ping: no SR/SSR/UR found in %s", after.channel.name)
 
