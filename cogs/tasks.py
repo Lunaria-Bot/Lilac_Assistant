@@ -7,10 +7,9 @@ from discord.ext import commands
 log = logging.getLogger("cog-tasks")
 
 STATUSES = [
-    discord.Activity(type=discord.ActivityType.watching, name="Lilac 👀"),
-    discord.Activity(type=discord.ActivityType.playing, name="in her bed sleeping 😴"),
-    discord.Activity(type=discord.ActivityType.listening, name="to the last hit 🎵"),
-    discord.Activity(type=discord.ActivityType.competing, name="in a gambling den 🃏"),
+    discord.Activity(type=discord.ActivityType.watching, name="Lilac 🌸 "),
+    discord.Activity(type=discord.ActivityType.playing, name="Silksong 🪡 "),
+    discord.Activity(type=discord.ActivityType.listening, name="to Chase Atlantic 🌹"),
 ]
 
 class Tasks(commands.Cog):
