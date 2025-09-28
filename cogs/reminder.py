@@ -19,6 +19,17 @@ class Reminder(commands.Cog):
     def cog_unload(self):
         self.cleanup_task.cancel()
 
+    async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
+        """Send a styled reminder message (slash-like)."""
+        embed = discord.Embed(
+            description=f"⏱️ {member.mention}, ton `/summon` est de nouveau disponible !",
+            color=discord.Color.green()
+        )
+        try:
+            await channel.send(embed=embed)
+        except discord.Forbidden:
+            log.warning("❌ Cannot send reminder in %s", channel.name)
+
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
         """Start a summon reminder and persist it in Redis with channel info."""
         user_id = member.id
@@ -36,12 +47,7 @@ class Reminder(commands.Cog):
         async def reminder_task():
             try:
                 await asyncio.sleep(COOLDOWN_SECONDS)
-                try:
-                    await channel.send(
-                        f"⏰ {member.mention} your summon cooldown is over, you can summon again!"
-                    )
-                except discord.Forbidden:
-                    log.warning("❌ Cannot send reminder in %s", channel.name)
+                await self.send_reminder_message(member, channel)
             finally:
                 self.active_reminders.pop(user_id, None)
                 if getattr(self.bot, "redis", None):
@@ -85,9 +91,7 @@ class Reminder(commands.Cog):
             async def reminder_task():
                 try:
                     await asyncio.sleep(remaining)
-                    await channel.send(
-                        f"⏰ {member.mention} your summon cooldown is over, you can summon again!"
-                    )
+                    await self.send_reminder_message(member, channel)
                 finally:
                     self.active_reminders.pop(user_id, None)
                     await self.bot.redis.delete(key)
