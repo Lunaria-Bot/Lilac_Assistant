@@ -9,7 +9,7 @@ log = logging.getLogger("cog-tasks")
 STATUSES = [
     discord.Activity(type=discord.ActivityType.watching, name="Lilac 🌸 "),
     discord.Activity(type=discord.ActivityType.playing, name="Silksong 🪡 "),
-    discord.Activity(type=discord.ActivityType.listening, name="to Chase Atlantic 🌹"),
+    discord.Activity(type=discord.ActivityType.listening, name="to K-Pop 🎵"),
 ]
 
 class Tasks(commands.Cog):
