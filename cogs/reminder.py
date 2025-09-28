@@ -7,9 +7,11 @@ from discord.ext import commands, tasks
 
 log = logging.getLogger("cog-reminder")
 
-COOLDOWN_SECONDS = 1800  # 30 minutes
+COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minutes
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # ✅ use env var
 REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))  # ✅ default 10 min
+SUMMON_COMMAND_ID = os.getenv("SUMMON_COMMAND_ID")  # optional: use </summon:ID> mention if provided
+
 
 class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -20,10 +22,21 @@ class Reminder(commands.Cog):
     def cog_unload(self):
         self.cleanup_task.cancel()
 
+    def get_summon_text(self) -> str:
+        """Return a command mention if ID is provided, otherwise plain /summon."""
+        if SUMMON_COMMAND_ID and SUMMON_COMMAND_ID.isdigit():
+            return f"</summon:{SUMMON_COMMAND_ID}>"
+        return "/summon"
+
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
-        """Send a plain text reminder message (ping + /summon)."""
+        """Send a plain text reminder message with a real user ping and command mention."""
+        summon_text = self.get_summon_text()
+        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
         try:
-            await channel.send(f"⏱️ {member.mention}, ton `/summon` est de nouveau disponible !")
+            await channel.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
         except discord.Forbidden:
             log.warning("❌ Cannot send reminder in %s", channel.name)
 
@@ -125,7 +138,7 @@ class Reminder(commands.Cog):
         await self.bot.wait_until_ready()
 
     # --- Listener: trigger only on summon claim (not auto summon) ---
-    @commands.Cog.listener()
+    @commands.Cog.listener())
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
             return
