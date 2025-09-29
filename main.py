@@ -3,12 +3,13 @@ import logging
 import asyncio
 import discord
 from discord.ext import commands
-import redis.asyncio as redis  # ✅ on utilise redis.asyncio
+import redis.asyncio as redis
 from discord import app_commands
+import glob
 
 # --- Logging ---
 logging.basicConfig(
-    level=logging.INFO,  # Mets DEBUG si tu veux plus de détails
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 log = logging.getLogger("main")
@@ -16,7 +17,6 @@ log = logging.getLogger("main")
 # --- Token & Redis ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))  # 🔑 ID du serveur cible
 
 # --- Intents ---
 intents = discord.Intents.default()
@@ -33,19 +33,36 @@ async def setup_hook():
     # Connexion Redis
     try:
         bot.redis = redis.from_url(REDIS_URL, decode_responses=True)
-        await bot.redis.ping()  # test rapide
+        await bot.redis.ping()
         log.info("✅ Connected to Redis at %s", REDIS_URL)
     except Exception as e:
         bot.redis = None
         log.error("❌ Redis connection failed: %s", e)
 
-    # Charger les cogs
-    for cog in ["cogs.leaderboard", "cogs.reminder", "cogs.log", "cogs.tasks","cogs.high_tier","cogs.admin"]:
+    # --- Auto‑load de tous les cogs dans /cogs ---
+    cog_files = glob.glob("cogs/*.py")
+    results = []
+
+    for file in cog_files:
+        cog_name = file.replace("/", ".").replace("\\", ".")[:-3]  # ex: cogs.admin
         try:
-            await bot.load_extension(cog)
-            log.info("✅ Loaded cog: %s", cog)
+            await bot.load_extension(cog_name)
+            results.append((cog_name, "✅"))
         except Exception as e:
-            log.exception("❌ Failed to load cog %s", cog, exc_info=e)
+            results.append((cog_name, f"❌ ({type(e).__name__})"))
+            log.exception("❌ Failed to load cog %s", cog_name, exc_info=e)
+
+    # --- Affichage tableau clair ---
+    log.info("📦 Cogs loading summary:")
+    for name, status in results:
+        log.info("   %s %s", status, name)
+
+    # 🔑 Sync global une seule fois au démarrage
+    try:
+        synced = await bot.tree.sync()
+        log.info("🌍 Global slash commands synced (%s commandes)", len(synced))
+    except Exception as e:
+        log.exception("❌ Failed to sync global slash commands:", exc_info=e)
 
 bot.setup_hook = setup_hook
 
@@ -54,14 +71,6 @@ bot.setup_hook = setup_hook
 async def on_ready():
     log.info("🤖 Bot connecté en tant que %s (ID: %s)", bot.user, bot.user.id)
     log.info("🌍 Connecté sur %s serveurs", len(bot.guilds))
-
-    # 🔑 Synchronisation automatique au démarrage
-    try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        log.info("✅ Slash commands synced to guild %s (%s commandes)", GUILD_ID, len(synced))
-    except Exception as e:
-        log.exception("❌ Failed to sync slash commands:", exc_info=e)
 
 # --- Run ---
 if __name__ == "__main__":
