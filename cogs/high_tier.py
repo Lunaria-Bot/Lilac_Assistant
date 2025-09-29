@@ -178,7 +178,8 @@ class HighTier(commands.Cog):
                 self.triggered_messages[after.id] = time.time()
                 emoji = RARITY_CUSTOM_EMOJIS.get(found_rarity, "🌸")
                 msg = RARITY_MESSAGES[found_rarity].format(emoji=emoji)
-                await after.channel.send(f"{msg}\n🔥 {role.mention}")
+                # ✅ Envoi uniquement du texte, pas d'embed
+                await after.channel.send(f"{msg}\n {role.mention}")
                 log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
 
 
