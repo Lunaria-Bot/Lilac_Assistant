@@ -1,93 +1,178 @@
+import os
 import logging
+import asyncio
+import time
 import discord
-from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
-log = logging.getLogger("cog-admin")
+log = logging.getLogger("cog-reminder")
+
+COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minutes
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
+SUMMON_COMMAND_ID = os.getenv("SUMMON_COMMAND_ID")  # optional: use </summon:ID> mention if provided
 
 
-class Admin(commands.Cog):
+class Reminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.active_reminders = {}
+        self.cleanup_task.start()
 
-    # --- Slash command /sync ---
-    @app_commands.command(name="sync", description="Resynchroniser les commandes slash (guild + global)")
-    @app_commands.describe(scope="Choisir 'guild' ou 'global'")
-    @app_commands.choices(
-        scope=[
-            app_commands.Choice(name="Guild only", value="guild"),
-            app_commands.Choice(name="Global only", value="global"),
-        ]
-    )
-    async def sync_cmd(self, interaction: discord.Interaction, scope: app_commands.Choice[str] = None):
-        await interaction.response.defer(ephemeral=True)
+    def cog_unload(self):
+        self.cleanup_task.cancel()
 
+    def get_summon_text(self) -> str:
+        if SUMMON_COMMAND_ID and SUMMON_COMMAND_ID.isdigit():
+            return f"</summon:{SUMMON_COMMAND_ID}>"
+        return "/summon"
+
+    async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
+        summon_text = self.get_summon_text()
+        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
         try:
-            if scope is None:
-                synced_guild = await self.bot.tree.sync(guild=interaction.guild)
-                synced_global = await self.bot.tree.sync()
-                await interaction.followup.send(
-                    f"✅ {len(synced_guild)} commandes resynchronisées sur **{interaction.guild.name}**\n"
-                    f"🌍 {len(synced_global)} commandes globales resynchronisées.",
-                    ephemeral=True
-                )
-            elif scope.value == "guild":
-                synced = await self.bot.tree.sync(guild=interaction.guild)
-                await interaction.followup.send(
-                    f"✅ {len(synced)} commandes resynchronisées uniquement sur **{interaction.guild.name}**.",
-                    ephemeral=True
-                )
-            elif scope.value == "global":
-                synced = await self.bot.tree.sync()
-                await interaction.followup.send(
-                    f"🌍 {len(synced)} commandes globales resynchronisées.",
-                    ephemeral=True
-                )
-        except Exception as e:
-            log.exception("❌ Sync failed", exc_info=e)
-            await interaction.followup.send("❌ Une erreur est survenue pendant la synchronisation.", ephemeral=True)
-
-    # --- Slash command /sync-clean ---
-    @app_commands.command(name="sync-clean", description="Purge et republie toutes les commandes globales")
-    async def sync_clean(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            self.bot.tree.clear_commands(guild=None)
-            await self.bot.tree.sync(guild=None)
-
-            synced = await self.bot.tree.sync()
-            await interaction.followup.send(
-                f"🧹 Purge terminée. 🌍 {len(synced)} commandes globales republisées depuis ton code.",
-                ephemeral=True
+            await channel.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
-            log.info("🧹 Global commands purged and re-synced (%s commands)", len(synced))
-        except Exception as e:
-            log.exception("❌ Failed to clean global commands", exc_info=e)
-            await interaction.followup.send("❌ Erreur lors du nettoyage global.", ephemeral=True)
+        except discord.Forbidden:
+            log.warning("❌ Cannot send reminder in %s", channel.name)
 
-    # --- Slash command /reminder ---
-    @app_commands.command(name="reminder", description="Enable or disable summon reminders")
-    @app_commands.describe(state="Enable or disable the summon reminder")
-    @app_commands.choices(
-        state=[
-            app_commands.Choice(name="On", value="on"),
-            app_commands.Choice(name="Off", value="off"),
-        ]
-    )
-    async def reminder_cmd(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
+    # --- Helper: check if reminder is enabled for a user ---
+    async def is_reminder_enabled(self, member: discord.Member) -> bool:
         if not getattr(self.bot, "redis", None):
-            await interaction.response.send_message("⚠️ Redis n’est pas configuré, reminders toujours activés.", ephemeral=True)
+            return True  # ✅ par défaut activé
+        key = f"reminder:settings:{member.guild.id}:{member.id}:summon"
+        val = await self.bot.redis.get(key)
+        if val is None:
+            return True  # ✅ par défaut activé
+        return val == "1"
+
+    async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        """Start a summon reminder only if enabled for the user."""
+        if not await self.is_reminder_enabled(member):
+            log.info("⏸️ Reminder disabled for %s, skipping.", member.display_name)
             return
 
-        key = f"reminder:settings:{interaction.guild.id}:{interaction.user.id}:summon"
-        if state.value == "on":
-            await self.bot.redis.set(key, "1")
-            await interaction.response.send_message("✅ Summon reminders enabled.", ephemeral=True)
-        else:
-            await self.bot.redis.set(key, "0")
-            await interaction.response.send_message("⏸️ Summon reminders disabled.", ephemeral=True)
+        user_id = member.id
+        if user_id in self.active_reminders:
+            return
+
+        if getattr(self.bot, "redis", None):
+            expire_at = int(time.time()) + COOLDOWN_SECONDS
+            await self.bot.redis.hset(
+                f"reminder:summon:{user_id}",
+                mapping={"expire_at": expire_at, "channel_id": channel.id}
+            )
+
+        async def reminder_task():
+            try:
+                await asyncio.sleep(COOLDOWN_SECONDS)
+                if await self.is_reminder_enabled(member):
+                    await self.send_reminder_message(member, channel)
+            finally:
+                self.active_reminders.pop(user_id, None)
+                if getattr(self.bot, "redis", None):
+                    await self.bot.redis.delete(f"reminder:summon:{user_id}")
+
+        task = asyncio.create_task(reminder_task())
+        self.active_reminders[user_id] = task
+        log.info("▶️ Reminder started for %s in %s", member.display_name, channel.name)
+
+    async def restore_reminders(self):
+        if not getattr(self.bot, "redis", None):
+            return
+
+        keys = await self.bot.redis.keys("reminder:summon:*")
+        now = int(time.time())
+
+        for key in keys:
+            user_id = int(key.split(":")[-1])
+            data = await self.bot.redis.hgetall(key)
+            if not data:
+                continue
+
+            expire_at = int(data.get("expire_at", 0))
+            channel_id = int(data.get("channel_id", 0))
+            remaining = expire_at - now
+            if remaining <= 0:
+                await self.bot.redis.delete(key)
+                continue
+
+            guild = self.bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            member = guild.get_member(user_id)
+            if not member:
+                continue
+            channel = guild.get_channel(channel_id)
+            if not channel:
+                continue
+
+            async def reminder_task():
+                try:
+                    await asyncio.sleep(remaining)
+                    if await self.is_reminder_enabled(member):
+                        await self.send_reminder_message(member, channel)
+                finally:
+                    self.active_reminders.pop(user_id, None)
+                    await self.bot.redis.delete(key)
+
+            task = asyncio.create_task(reminder_task())
+            self.active_reminders[user_id] = task
+            log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
+
+    @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
+    async def cleanup_task(self):
+        if not getattr(self.bot, "redis", None):
+            return
+
+        keys = await self.bot.redis.keys("reminder:summon:*")
+        now = int(time.time())
+        removed = 0
+
+        for key in keys:
+            data = await self.bot.redis.hgetall(key)
+            if not data:
+                continue
+            expire_at = int(data.get("expire_at", 0))
+            if expire_at and expire_at <= now:
+                await self.bot.redis.delete(key)
+                removed += 1
+
+        if removed:
+            log.info("🧹 Cleanup removed %s expired reminders", removed)
+
+    @cleanup_task.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if not after.guild or not after.embeds:
+            return
+
+        embed = after.embeds[0]
+        title = (embed.title or "").lower()
+
+        if "summon claimed" in title and "auto summon claimed" not in title:
+            if not embed.description:
+                return
+            import re
+            match = re.search(r"<@!?(\d+)>", embed.description)
+            if not match:
+                return
+
+            user_id = int(match.group(1))
+            member = after.guild.get_member(user_id)
+            if not member:
+                return
+
+            await self.start_reminder(member, after.channel)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Admin(bot), override=True)
-    log.info("⚙️ Admin cog loaded (sync, sync-clean, reminder)")
+    cog = Reminder(bot)
+    await bot.add_cog(cog)
+    await cog.restore_reminders()
+    log.info("⚙️ Reminder cog loaded (logic only, no slash command)")
