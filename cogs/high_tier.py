@@ -10,6 +10,7 @@ log = logging.getLogger("cog-high-tier")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 HIGH_TIER_ROLE_ID = int(os.getenv("HIGH_TIER_ROLE_ID", "0"))
 HIGH_TIER_COOLDOWN = int(os.getenv("HIGH_TIER_COOLDOWN", "300"))
+REQUIRED_ROLE_ID = int(os.getenv("REQUIRED_ROLE_ID", "0"))  # ✅ rôle requis
 
 # IDs détectés dans les embeds de Mudae
 RARITY_EMOJIS = {
@@ -25,7 +26,7 @@ RARITY_CUSTOM_EMOJIS = {
     "UR": "<a:UltraRare:1342208044351623199>",
 }
 
-# Messages de rareté (mis à jour selon ta demande)
+# Messages de rareté
 RARITY_MESSAGES = {
     "SR":  "{emoji} has summoned, claim it!",
     "SSR": "{emoji} has summoned, claim it!",
@@ -58,7 +59,8 @@ class HighTier(commands.Cog):
         await self.bot.redis.set(key, str(now))
         return 0
 
-    @app_commands.command(name="high-tier", description="Get the High Tier role to be notified of rare flowers")
+    # --- Slash command /high-tier ---
+    @app_commands.command(name="high-tier", description="Get the High Tier role to be notified of rare spawn")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def high_tier(self, interaction: discord.Interaction):
         remaining = await self.check_cooldown(interaction.user.id)
@@ -68,14 +70,26 @@ class HighTier(commands.Cog):
                 ephemeral=True
             )
             return
+
+        # ✅ Vérification du rôle requis
+        required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
+        if required_role and required_role not in interaction.user.roles:
+            await interaction.response.send_message(
+                f"🚪 The gate to High Tier is locked… you need the key: {required_role.mention}.",
+                ephemeral=True
+            )
+            return
+
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
             await interaction.response.send_message("❌ High Tier role not found.", ephemeral=True)
             return
+
         member = interaction.user
         if role in member.roles:
             await interaction.response.send_message("✅ You already have the High Tier role.", ephemeral=True)
             return
+
         try:
             await member.add_roles(role, reason="User opted in for High Tier notifications")
             await interaction.response.send_message(
@@ -86,6 +100,7 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to assign the role.", ephemeral=True)
 
+    # --- Slash command /high-tier-remove ---
     @app_commands.command(name="high-tier-remove", description="Remove the High Tier role and stop notifications")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def high_tier_remove(self, interaction: discord.Interaction):
@@ -96,14 +111,17 @@ class HighTier(commands.Cog):
                 ephemeral=True
             )
             return
+
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
             await interaction.response.send_message("❌ High Tier role not found.", ephemeral=True)
             return
+
         member = interaction.user
         if role not in member.roles:
             await interaction.response.send_message("ℹ️ You don’t have the High Tier role.", ephemeral=True)
             return
+
         try:
             await member.remove_roles(role, reason="User opted out of High Tier notifications")
             await interaction.response.send_message(
@@ -114,6 +132,7 @@ class HighTier(commands.Cog):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Missing permissions to remove the role.", ephemeral=True)
 
+    # --- Cleanup task ---
     @tasks.loop(minutes=30)
     async def cleanup_triggered(self):
         now = time.time()
@@ -130,6 +149,7 @@ class HighTier(commands.Cog):
     async def before_cleanup_triggered(self):
         await self.bot.wait_until_ready()
 
+    # --- Event listener ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
@@ -155,7 +175,6 @@ class HighTier(commands.Cog):
         if found_rarity:
             role = after.guild.get_role(HIGH_TIER_ROLE_ID)
             if role:
-                # ✅ Marquer comme traité AVANT d’envoyer
                 self.triggered_messages[after.id] = time.time()
                 emoji = RARITY_CUSTOM_EMOJIS.get(found_rarity, "🌸")
                 msg = RARITY_MESSAGES[found_rarity].format(emoji=emoji)
