@@ -63,15 +63,18 @@ class Reminder(commands.Cog):
             await self.bot.redis.set(key, "1")
             await interaction.response.send_message("✅ Summon reminder has been **enabled**.", ephemeral=True)
         else:
-            await self.bot.redis.delete(key)
+            await self.bot.redis.set(key, "0")
             await interaction.response.send_message("❌ Summon reminder has been **disabled**.", ephemeral=True)
 
     # --- Helper: check if reminder is enabled for a user ---
     async def is_reminder_enabled(self, member: discord.Member) -> bool:
         if not getattr(self.bot, "redis", None):
-            return True  # fallback: enabled by default
+            return True  # ✅ par défaut activé
         key = f"reminder:settings:{member.guild.id}:{member.id}:summon"
-        return await self.bot.redis.get(key) == "1"
+        val = await self.bot.redis.get(key)
+        if val is None:
+            return True  # ✅ par défaut activé
+        return val == "1"
 
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
         """Start a summon reminder only if enabled for the user."""
@@ -200,3 +203,31 @@ async def setup(bot: commands.Bot):
     cog = Reminder(bot)
     await bot.add_cog(cog)
     await cog.restore_reminders()
+
+    # --- Ajout de la commande /sync ---
+    @bot.tree.command(name="sync", description="Resynchroniser les commandes slash (guild + global)")
+    @app_commands.describe(scope="Choisir 'guild' ou 'global'")
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="Guild only", value="guild"),
+            app_commands.Choice(name="Global only", value="global"),
+        ]
+    )
+    async def sync_cmd(interaction: discord.Interaction, scope: app_commands.Choice[str] = None):
+        if scope is None:
+            synced_guild = await bot.tree.sync(guild=interaction.guild)
+            synced_global = await bot.tree.sync()
+            await interaction.response.send_message(
+                f"✅ {len(synced_guild)} commandes resynchronisées sur **{interaction.guild.name}**\n"
+                f"🌍 {len(synced_global)} commandes globales resynchronisées.",
+                ephemeral=True
+            )
+        elif scope.value == "guild":
+            synced = await bot.tree.sync(guild=interaction.guild)
+            await interaction.response.send_message(
+                f"✅ {len(synced)} commandes resynchronisées uniquement sur **{interaction.guild.name}**.",
+                ephemeral=True
+            )
+        elif scope.value == "global":
+            synced = await bot.tree.sync()
+            await interaction.response.send_message
