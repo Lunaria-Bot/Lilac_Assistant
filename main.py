@@ -49,32 +49,6 @@ async def setup_hook():
 
 bot.setup_hook = setup_hook
 
-# --- Commande admin /sync ---
-def is_admin():
-    def predicate(interaction: discord.Interaction) -> bool:
-        return interaction.user.guild_permissions.administrator
-    return app_commands.check(predicate)
-
-@app_commands.command(name="sync", description="Resynchroniser les commandes slash (admin)")
-@app_commands.guilds(discord.Object(id=GUILD_ID))
-@is_admin()
-async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        await interaction.followup.send(
-            f"✅ {len(synced)} commandes resynchronisées sur le serveur {interaction.guild.name}.",
-            ephemeral=True
-        )
-        log.info("🔄 Slash commands resynced via /sync by %s", interaction.user)
-    except Exception as e:
-        log.exception("❌ Sync failed:", exc_info=e)
-        await interaction.followup.send("❌ Erreur pendant la resynchronisation.", ephemeral=True)
-
-# On ajoute la commande à l'arbre
-bot.tree.add_command(sync_commands)
-
 # --- Events ---
 @bot.event
 async def on_ready():
