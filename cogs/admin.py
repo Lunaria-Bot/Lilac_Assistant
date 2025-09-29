@@ -20,7 +20,7 @@ class Admin(commands.Cog):
         ]
     )
     async def sync_cmd(self, interaction: discord.Interaction, scope: app_commands.Choice[str] = None):
-        await interaction.response.defer(ephemeral=True)  # ✅ évite le timeout
+        await interaction.response.defer(ephemeral=True)
 
         try:
             if scope is None:
@@ -52,11 +52,9 @@ class Admin(commands.Cog):
     async def sync_clean(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            # Purge toutes les commandes globales
             self.bot.tree.clear_commands(guild=None)
             await self.bot.tree.sync(guild=None)
 
-            # Republie immédiatement celles définies dans ton code
             synced = await self.bot.tree.sync()
             await interaction.followup.send(
                 f"🧹 Purge terminée. 🌍 {len(synced)} commandes globales republisées depuis ton code.",
@@ -85,11 +83,17 @@ class Admin(commands.Cog):
         if state.value == "on":
             await self.bot.redis.set(key, "1")
             await interaction.response.send_message("✅ Summon reminders activés.", ephemeral=True)
+
+            # ✅ Envoi immédiat d’un exemple de reminder dans le même channel
+            await interaction.channel.send(
+                f"{interaction.user.mention}, your </summon:1301277778385174601> is **available** ⏱️"
+            )
+
         else:
             await self.bot.redis.set(key, "0")
             await interaction.response.send_message("⏸️ Summon reminders désactivés.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Admin(bot), override=True)  # ✅ override pour éviter les doublons
+    await bot.add_cog(Admin(bot), override=True)
     log.info("⚙️ Admin cog loaded (sync, sync-clean, reminder)")
