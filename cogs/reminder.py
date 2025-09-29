@@ -166,4 +166,37 @@ class Reminder(commands.Cog):
                 removed += 1
 
         if removed:
-            log.info("🧹 Cleanup
+            log.info("🧹 Cleanup removed %s expired reminders", removed)
+
+    @cleanup_task.before_loop
+    async def before_cleanup(self):
+        await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if not after.guild or not after.embeds:
+            return
+
+        embed = after.embeds[0]
+        title = (embed.title or "").lower()
+
+        if "summon claimed" in title and "auto summon claimed" not in title:
+            if not embed.description:
+                return
+            import re
+            match = re.search(r"<@!?(\d+)>", embed.description)
+            if not match:
+                return
+
+            user_id = int(match.group(1))
+            member = after.guild.get_member(user_id)
+            if not member:
+                return
+
+            await self.start_reminder(member, after.channel)
+
+
+async def setup(bot: commands.Bot):
+    cog = Reminder(bot)
+    await bot.add_cog(cog)
+    await cog.restore_reminders()
