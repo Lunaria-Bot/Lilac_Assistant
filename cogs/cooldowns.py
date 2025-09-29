@@ -34,30 +34,6 @@ async def safe_send(channel: discord.TextChannel, *args, **kwargs):
     except Exception:
         pass
 
-class Cooldowns(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-    # --- Slash command /high-tier ---
-    @app_commands.command(name="high-tier", description="Get the special high-tier role")
-    async def high_tier(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        member = interaction.user
-        if not guild:
-            await interaction.response.send_message("❌ This command must be used in a server.", ephemeral=True)
-            return
-
-        special_role = guild.get_role(HIGHTIER_ROLE_ID)
-        if not special_role:
-            await interaction.response.send_message("⚠️ High-tier role not configured.", ephemeral=True)
-            return
-
-        await member.add_roles(special_role)
-        await interaction.response.send_message(
-            f"I just gave you the role {special_role.mention} 🎉",
-            ephemeral=True
-        )
-
     # --- Events ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
