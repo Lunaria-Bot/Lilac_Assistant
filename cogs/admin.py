@@ -48,23 +48,24 @@ class Admin(commands.Cog):
             await interaction.followup.send("❌ Une erreur est survenue pendant la synchronisation.", ephemeral=True)
 
     # --- Slash command /sync-clean ---
-    @app_commands.command(name="sync-clean", description="Supprime toutes les commandes globales et resynchronise")
+    @app_commands.command(name="sync-clean", description="Purge et republie toutes les commandes globales")
     async def sync_clean(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         try:
-            # ⚠️ Vide complètement les commandes globales
+            # Purge toutes les commandes globales
             self.bot.tree.clear_commands(guild=None)
             await self.bot.tree.sync(guild=None)
 
+            # Republie immédiatement celles définies dans ton code
+            synced = await self.bot.tree.sync()
             await interaction.followup.send(
-                "🧹 Toutes les commandes globales ont été supprimées.\n"
-                "➡️ Relance `/sync global` pour republier uniquement celles de ton code.",
+                f"🧹 Purge terminée. 🌍 {len(synced)} commandes globales republisées depuis ton code.",
                 ephemeral=True
             )
-            log.info("🧹 Global commands cleared")
+            log.info("🧹 Global commands purged and re-synced (%s commands)", len(synced))
         except Exception as e:
             log.exception("❌ Failed to clean global commands", exc_info=e)
-            await interaction.followup.send("❌ Erreur lors du nettoyage des commandes globales.", ephemeral=True)
+            await interaction.followup.send("❌ Erreur lors du nettoyage global.", ephemeral=True)
 
     # --- Slash command /reminder ---
     @app_commands.command(name="reminder", description="Enable or disable summon reminders")
