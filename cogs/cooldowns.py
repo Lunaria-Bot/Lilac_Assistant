@@ -1,9 +1,7 @@
 import os
 import re
-import asyncio
 import logging
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 log = logging.getLogger("cog-cooldowns")
@@ -12,13 +10,6 @@ log = logging.getLogger("cog-cooldowns")
 GUILD_IDS = [int(x) for x in os.getenv("GUILD_IDS", "").split(",") if x]
 MAZOKU_BOT_ID = int(os.getenv("MAZOKU_BOT_ID", "0"))
 HIGHTIER_ROLE_ID = int(os.getenv("HIGHTIER_ROLE_ID", "0"))
-
-# --- Cooldowns in seconds ---
-COOLDOWN_SECONDS = {
-    "summon": 1800,
-    "open-boxes": 60,
-    "open-pack": 60
-}
 
 # --- Rarity emojis ---
 RARITY_EMOTES = {
@@ -34,10 +25,14 @@ async def safe_send(channel: discord.TextChannel, *args, **kwargs):
     except Exception:
         pass
 
+class Cooldowns(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
     # --- Events ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if not self.bot.redis:
+        if not getattr(self.bot, "redis", None):
             return
         if not message.guild or message.guild.id not in GUILD_IDS:
             return
@@ -83,4 +78,4 @@ async def safe_send(channel: discord.TextChannel, *args, **kwargs):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Cooldowns(bot))
-
+    log.info("⚙️ Cooldowns cog loaded (events only, no slash command)")
