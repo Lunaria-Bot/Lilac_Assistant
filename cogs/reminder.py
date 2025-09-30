@@ -11,7 +11,6 @@ log = logging.getLogger("cog-reminder")
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minutes
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
-SUMMON_COMMAND_ID = os.getenv("SUMMON_COMMAND_ID")  # optional: use </summon:ID> mention if provided
 
 
 class Reminder(commands.Cog):
@@ -23,14 +22,12 @@ class Reminder(commands.Cog):
     def cog_unload(self):
         self.cleanup_task.cancel()
 
-    def get_summon_text(self) -> str:
-        if SUMMON_COMMAND_ID and SUMMON_COMMAND_ID.isdigit():
-            return f"</summon:{SUMMON_COMMAND_ID}>"
-        return "/summon"
-
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
-        summon_text = self.get_summon_text()
-        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
+        # 🔔 Message final personnalisé
+        content = (
+            f"⏱️Hey ! {member.mention}, your </summon:1301277778385174601> "
+            f"is available <:Kanna_Cool:1298168957420834816>"
+        )
         try:
             await channel.send(
                 content,
