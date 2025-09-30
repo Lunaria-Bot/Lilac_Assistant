@@ -29,7 +29,7 @@ class Reminder(commands.Cog):
 
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
         summon_text = self.get_summon_text()
-        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
+        content = f"⏱️ {member.mention}, your </summon:1301277778385174601> is ready again!"
         try:
             await channel.send(
                 content,
