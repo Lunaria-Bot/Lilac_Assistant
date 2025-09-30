@@ -75,7 +75,7 @@ class HighTier(commands.Cog):
         required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
         if required_role and required_role not in interaction.user.roles:
             await interaction.response.send_message(
-                f"🚪 The gate to High Tier is locked… you need the key: {required_role.mention}.",
+                f"oops, only Lilac members have access to this feature {required_role.mention}.",
                 ephemeral=True
             )
             return
