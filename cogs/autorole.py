@@ -24,8 +24,7 @@ class AutoRole(commands.Cog):
         market_ban_role = guild.get_role(MARKET_BAN_ID)
 
         if not access_role:
-            log.warning("⚠️ Cross Trade Access role introuvable dans le serveur.")
-            return
+            return  # on ne spam plus, on sort simplement
 
         # Condition : doit avoir lvl10 ET ne pas avoir de ban
         if lvl10_role in member.roles and ban_role not in member.roles and market_ban_role not in member.roles:
@@ -54,6 +53,11 @@ class AutoRole(commands.Cog):
     async def on_ready(self):
         for guild in self.bot.guilds:
             log.info("🔍 Vérification globale des rôles dans %s...", guild.name)
+            access_role = guild.get_role(CROSS_TRADE_ACCESS_ID)
+            if not access_role:
+                log.warning("⚠️ Cross Trade Access role introuvable dans %s, ignoré.", guild.name)
+                continue
+
             for member in guild.members:
                 await self.update_cross_trade_access(member)
         log.info("✅ Vérification globale terminée.")
