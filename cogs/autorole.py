@@ -12,10 +12,14 @@ CROSS_TRADE_ACCESS_ID = 1332804856918052914
 CROSS_TRADE_BAN_ID = 1306954214106202144
 MARKET_BAN_ID = 1306958134245457970
 
+# Guild ID where commands should be registered instantly
+GUILD_ID = 1293611593845706793  # ⚠️ replace with your server ID
+
 
 class AutoRole(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.scanning = False  # flag to disable on_member_update during scans
 
     async def update_cross_trade_access(self, member: discord.Member):
         """Check member roles and adjust Cross Trade Access accordingly."""
@@ -26,10 +30,9 @@ class AutoRole(commands.Cog):
         market_ban_role = guild.get_role(MARKET_BAN_ID)
 
         if not access_role:
-            return  # Skip if the role does not exist in this guild
+            return
 
         try:
-            # Condition: must have lvl10 AND must not have ban roles
             if lvl10_role in member.roles and ban_role not in member.roles and market_ban_role not in member.roles:
                 if access_role not in member.roles:
                     await member.add_roles(access_role, reason="AutoRole: Lvl10 without ban")
@@ -39,19 +42,18 @@ class AutoRole(commands.Cog):
                     await member.remove_roles(access_role, reason="AutoRole: Ban detected or not lvl10")
                     log.info("🚫 Removed Cross Trade Access from %s", member.display_name)
 
-            # 🔑 Throttle to avoid hitting Discord rate limits
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.2)  # throttle
 
         except discord.Forbidden:
             log.error("❌ Missing permissions to modify roles for %s", member.display_name)
 
-    # --- Event: when a member's roles are updated ---
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if self.scanning:
+            return
         if before.roles != after.roles:
             await self.update_cross_trade_access(after)
 
-    # --- Global check at startup ---
     @commands.Cog.listener()
     async def on_ready(self):
         for guild in self.bot.guilds:
@@ -61,12 +63,16 @@ class AutoRole(commands.Cog):
                 log.warning("⚠️ Cross Trade Access role not found in %s, skipping.", guild.name)
                 continue
 
+            self.scanning = True
             for member in guild.members:
                 await self.update_cross_trade_access(member)
+            self.scanning = False
+
         log.info("✅ Global role check completed.")
 
     # --- Slash command: check one member ---
     @app_commands.command(name="check_autorole", description="Force a role check for a specific member")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.default_permissions(administrator=True)
     async def check_autorole(self, interaction: discord.Interaction, member: discord.Member = None):
         if not member:
@@ -78,6 +84,7 @@ class AutoRole(commands.Cog):
 
     # --- Slash command: check all members with progress updates ---
     @app_commands.command(name="check_autorole_all", description="Force a global role check for all members")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.default_permissions(administrator=True)
     async def check_autorole_all(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -94,8 +101,8 @@ class AutoRole(commands.Cog):
 
         total = len(guild.members)
         checked = 0
+        self.scanning = True
 
-        # Send progress updates every 25 members
         for member in guild.members:
             await self.update_cross_trade_access(member)
             checked += 1
@@ -104,6 +111,7 @@ class AutoRole(commands.Cog):
                     f"Progress: {checked}/{total} members checked...", ephemeral=True
                 )
 
+        self.scanning = False
         await interaction.followup.send("✅ Global role check completed.", ephemeral=True)
         log.info("♻️ Manual global role check completed in %s", guild.name)
 
