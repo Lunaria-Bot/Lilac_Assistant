@@ -106,8 +106,9 @@ class AutoRole(commands.Cog):
             )
             return
 
+        # Acknowledge the command
         await interaction.response.send_message(
-            "🔍 Starting global role check... This may take a while.", ephemeral=True
+            "🔍 Starting global role check... Progress will be posted here.", ephemeral=True
         )
 
         total = len(guild.members)
@@ -119,20 +120,27 @@ class AutoRole(commands.Cog):
             await self.update_cross_trade_access(member)
             checked += 1
             if checked % 25 == 0 or checked == total:
-                await interaction.followup.send(
-                    f"Progress: {checked}/{total} members checked...", ephemeral=True
-                )
+                await interaction.channel.send(f"Progress: {checked}/{total} members checked...")
 
         self.scanning = False
-        await interaction.followup.send("✅ Global role check completed.", ephemeral=True)
+        await interaction.channel.send("✅ Global role check completed.")
         log.info("♻️ Manual global role check completed in %s", guild.name)
 
-        # Notify in channel
+        # Notify in the dedicated channel with batched mentions
         if self.changed_members:
             channel = guild.get_channel(NOTIFY_CHANNEL_ID)
             if channel:
-                mentions = " ".join(m.mention for m in self.changed_members)
-                await channel.send(f"Hey, I just finished my task! 🎉\nUsers concerned: {mentions}")
+                await channel.send("Hey, I just finished my task! 🎉 Users concerned:")
+
+                # Batch mentions into groups of 20
+                batch_size = 20
+                for i in range(0, len(self.changed_members), batch_size):
+                    batch = self.changed_members[i:i + batch_size]
+                    mentions = " ".join(m.mention for m in batch)
+                    await channel.send(mentions)
+
+                # ✅ Final summary count
+                await channel.send(f"📊 Total users updated: **{len(self.changed_members)}**")
 
 
 async def setup(bot: commands.Bot):
