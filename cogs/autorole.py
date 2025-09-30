@@ -3,13 +3,13 @@ import asyncio
 import discord
 from discord.ext import commands
 from discord import app_commands
-import aioredis
+import redis.asyncio as redis
 
 log = logging.getLogger("cog-autorole")
 
 # Role IDs
 LVL10_ROLE_ID = 1297161587744047106
-CROSS_TRADE_ACCESS_ID = 1332804856918052914
+CROSS_TRADE_ACCESS_ID = 1332804856918052914  # ✅ updated ID
 CROSS_TRADE_BAN_ID = 1306954214106202144
 MARKET_BAN_ID = 1306958134245457970
 
@@ -32,7 +32,8 @@ class AutoRole(commands.Cog):
         self.redis = None
 
     async def cog_load(self):
-        self.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+        # Connect to Redis when cog loads
+        self.redis = redis.from_url(REDIS_URL, decode_responses=True)
 
     async def cog_unload(self):
         if self.redis:
@@ -59,7 +60,7 @@ class AutoRole(commands.Cog):
         cached_state = await self.redis.get(key)
 
         if cached_state is not None and (cached_state == "1") == should_have:
-            return  # Already correct
+            return  # Already correct, skip
 
         try:
             if should_have:
@@ -76,7 +77,7 @@ class AutoRole(commands.Cog):
             # Update Redis with TTL
             await self.redis.set(key, "1" if should_have else "0", ex=REDIS_TTL)
 
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(1.2)  # throttle
 
         except discord.Forbidden:
             log.error("❌ Missing permissions to modify roles for %s", member.display_name)
