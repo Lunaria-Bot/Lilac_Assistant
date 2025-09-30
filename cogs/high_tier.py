@@ -10,7 +10,7 @@ log = logging.getLogger("cog-high-tier")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 HIGH_TIER_ROLE_ID = int(os.getenv("HIGH_TIER_ROLE_ID", "0"))
 HIGH_TIER_COOLDOWN = int(os.getenv("HIGH_TIER_COOLDOWN", "300"))
-REQUIRED_ROLE_ID = int(os.getenv("REQUIRED_ROLE_ID", "0"))  # ✅ rôle requis
+REQUIRED_ROLE_ID = int(os.getenv("REQUIRED_ROLE_ID", "0"))  # rôle requis
 
 # IDs détectés dans les embeds de Mudae
 RARITY_EMOJIS = {
@@ -71,16 +71,16 @@ class HighTier(commands.Cog):
             )
             return
 
-       # ✅ Vérification du rôle requis
-required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
-if required_role and required_role not in interaction.user.roles:
-    await interaction.response.send_message(
-        f"oops, only {required_role.mention} have access to this feature <:lilac_pensivebread:1415672792522952725>.",
-        ephemeral=True
-    )
-    return
+        # ✅ Vérification du rôle requis
+        required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
+        if required_role and required_role not in interaction.user.roles:
+            await interaction.response.send_message(
+                f"oops, only {required_role.mention} have access to this feature <:lilac_pensivebread:1415672792522952725>.",
+                ephemeral=True
+            )
+            return
 
-
+        # ✅ Rôle High Tier
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
             await interaction.response.send_message("❌ High Tier role not found.", ephemeral=True)
@@ -137,14 +137,10 @@ if required_role and required_role not in interaction.user.roles:
     @tasks.loop(minutes=30)
     async def cleanup_triggered(self):
         now = time.time()
-        before = len(self.triggered_messages)
         self.triggered_messages = {
             mid: ts for mid, ts in self.triggered_messages.items()
             if now - ts < 6 * 3600
         }
-        after = len(self.triggered_messages)
-        if before != after:
-            log.debug("🧹 Cleaned triggered_messages: %s → %s entries", before, after)
 
     @cleanup_triggered.before_loop
     async def before_cleanup_triggered(self):
@@ -179,10 +175,9 @@ if required_role and required_role not in interaction.user.roles:
                 self.triggered_messages[after.id] = time.time()
                 emoji = RARITY_CUSTOM_EMOJIS.get(found_rarity, "🌸")
                 msg = RARITY_MESSAGES[found_rarity].format(emoji=emoji)
-                # ✅ Envoi uniquement du texte, pas d'embed
-                await after.channel.send(f"{msg}\n {role.mention}")
-                log.info("🌸 High Tier ping sent once for rarity %s in %s", found_rarity, after.channel.name)
+                await after.channel.send(f"{msg}\n🔥 {role.mention}")
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HighTier(bot))
+    log.info("⚙️ HighTier cog loaded")
