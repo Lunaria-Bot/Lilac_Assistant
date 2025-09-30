@@ -51,7 +51,6 @@ class Reminder(commands.Cog):
     async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
         """Start a summon reminder only if enabled for the user."""
         if not await self.is_reminder_enabled(member):
-            log.info("⏸️ Reminder disabled for %s, skipping.", member.display_name)
             return
 
         user_id = member.id
@@ -77,7 +76,6 @@ class Reminder(commands.Cog):
 
         task = asyncio.create_task(reminder_task())
         self.active_reminders[user_id] = task
-        log.info("▶️ Reminder started for %s in %s", member.display_name, channel.name)
 
     async def restore_reminders(self):
         if not getattr(self.bot, "redis", None):
@@ -120,7 +118,6 @@ class Reminder(commands.Cog):
 
             task = asyncio.create_task(reminder_task())
             self.active_reminders[user_id] = task
-            log.info("♻️ Restored reminder for %s in #%s (%ss left)", member.display_name, channel.name, remaining)
 
     @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
     async def cleanup_task(self):
@@ -129,7 +126,6 @@ class Reminder(commands.Cog):
 
         keys = await self.bot.redis.keys("reminder:summon:*")
         now = int(time.time())
-        removed = 0
 
         for key in keys:
             data = await self.bot.redis.hgetall(key)
@@ -138,10 +134,6 @@ class Reminder(commands.Cog):
             expire_at = int(data.get("expire_at", 0))
             if expire_at and expire_at <= now:
                 await self.bot.redis.delete(key)
-                removed += 1
-
-        if removed:
-            log.info("🧹 Cleanup removed %s expired reminders", removed)
 
     @cleanup_task.before_loop
     async def before_cleanup(self):
