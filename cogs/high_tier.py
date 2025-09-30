@@ -71,14 +71,15 @@ class HighTier(commands.Cog):
             )
             return
 
-        # ✅ Vérification du rôle requis
-        required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
-        if required_role and required_role not in interaction.user.roles:
-            await interaction.response.send_message(
-                f"oops, only Lilac members have access to this feature {required_role.mention}.",
-                ephemeral=True
-            )
-            return
+       # ✅ Vérification du rôle requis
+required_role = interaction.guild.get_role(REQUIRED_ROLE_ID)
+if required_role and required_role not in interaction.user.roles:
+    await interaction.response.send_message(
+        f"oops, only {required_role.mention} have access to this feature <:lilac_pensivebread:1415672792522952725>.",
+        ephemeral=True
+    )
+    return
+
 
         role = interaction.guild.get_role(HIGH_TIER_ROLE_ID)
         if not role:
