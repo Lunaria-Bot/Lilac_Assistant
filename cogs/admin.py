@@ -76,19 +76,16 @@ class Admin(commands.Cog):
     )
     async def reminder_cmd(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
         if not getattr(self.bot, "redis", None):
-            await interaction.response.send_message("⚠️ Redis n’est pas configuré, reminders toujours activés.", ephemeral=True)
+            await interaction.response.send_message(
+                "⚠️ Redis n’est pas configuré, reminders toujours activés.",
+                ephemeral=True
+            )
             return
 
         key = f"reminder:settings:{interaction.guild.id}:{interaction.user.id}:summon"
         if state.value == "on":
             await self.bot.redis.set(key, "1")
             await interaction.response.send_message("✅ Summon reminders activés.", ephemeral=True)
-
-            # ✅ Envoi immédiat d’un exemple de reminder dans le même channel
-            await interaction.channel.send(
-                f"{interaction.user.mention}, your </summon:1301277778385174601> is **available** ⏱️"
-            )
-
         else:
             await self.bot.redis.set(key, "0")
             await interaction.response.send_message("⏸️ Summon reminders désactivés.", ephemeral=True)
