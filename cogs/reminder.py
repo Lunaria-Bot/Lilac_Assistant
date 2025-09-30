@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import time
+import re
 import discord
 from discord.ext import commands, tasks
 
@@ -29,12 +30,13 @@ class Reminder(commands.Cog):
 
     async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
         summon_text = self.get_summon_text()
-        content = f"⏱️ {member.mention}, your </summon:1301277778385174601> is ready again!"
+        content = f"⏱️ {member.mention}, your {summon_text} is ready again!"
         try:
             await channel.send(
                 content,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
+            log.info("⏰ Reminder sent to %s in #%s", member.display_name, channel.name)
         except discord.Forbidden:
             log.warning("❌ Cannot send reminder in %s", channel.name)
 
@@ -76,6 +78,8 @@ class Reminder(commands.Cog):
 
         task = asyncio.create_task(reminder_task())
         self.active_reminders[user_id] = task
+        log.info("▶️ Reminder started for %s in #%s (will trigger in %ss)",
+                 member.display_name, channel.name, COOLDOWN_SECONDS)
 
     async def restore_reminders(self):
         if not getattr(self.bot, "redis", None):
@@ -118,6 +122,8 @@ class Reminder(commands.Cog):
 
             task = asyncio.create_task(reminder_task())
             self.active_reminders[user_id] = task
+            log.info("♻️ Restored reminder for %s in #%s (%ss left)",
+                     member.display_name, channel.name, remaining)
 
     @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
     async def cleanup_task(self):
@@ -146,12 +152,16 @@ class Reminder(commands.Cog):
 
         embed = after.embeds[0]
         title = (embed.title or "").lower()
+        desc = embed.description or ""
+        footer = embed.footer.text.lower() if embed.footer and embed.footer.text else ""
 
         if "summon claimed" in title and "auto summon claimed" not in title:
-            if not embed.description:
-                return
-            import re
-            match = re.search(r"<@!?(\d+)>", embed.description)
+            # Cherche l'ID dans la description
+            match = re.search(r"<@!?(\d+)>", desc)
+            # Fallback : cherche dans le footer si pas trouvé
+            if not match and "claimed by" in footer:
+                match = re.search(r"<@!?(\d+)>", footer)
+
             if not match:
                 return
 
