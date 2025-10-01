@@ -16,6 +16,7 @@ MESSAGE = (
 )
 
 GUILD_ID = 1293611593845706793  # your server ID
+RESET_ROLE_ID = 1305252546608365599  # ✅ role allowed to use /reset_ads
 
 
 class AutoAction(commands.Cog):
@@ -29,7 +30,6 @@ class AutoAction(commands.Cog):
     def next_sunday_midnight(self):
         """Return datetime of next Sunday 00:00 UTC."""
         now = datetime.now(timezone.utc)
-        # weekday(): Monday=0 ... Sunday=6
         days_ahead = (6 - now.weekday()) % 7
         if days_ahead == 0 and now.hour >= 0:
             days_ahead = 7
@@ -72,7 +72,8 @@ class AutoAction(commands.Cog):
 
             # Log in the log channel
             if log_channel:
-                await log_channel.send(f"📝 {trigger}: Channel {channel.mention} has been reset.")
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                await log_channel.send(f"📝 {trigger} at {now}: Channel {channel.mention} has been reset.")
 
         except discord.Forbidden:
             log.error("❌ Missing permissions to manage messages in %s", channel.name)
@@ -80,8 +81,17 @@ class AutoAction(commands.Cog):
     # --- Manual slash command ---
     @app_commands.command(name="reset_ads", description="Manually reset the ads channel")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    @app_commands.default_permissions(administrator=True)
     async def reset_ads(self, interaction: discord.Interaction):
+        # Allow if user has the required role OR is an administrator
+        is_admin = interaction.user.guild_permissions.administrator
+        has_role = any(role.id == RESET_ROLE_ID for role in interaction.user.roles)
+
+        if not (is_admin or has_role):
+            await interaction.response.send_message(
+                "⛔ You don’t have permission to use this command.", ephemeral=True
+            )
+            return
+
         await interaction.response.send_message("🔄 Resetting ads channel...", ephemeral=True)
         await self.clean_and_post(trigger=f"Manual reset by {interaction.user.mention}")
         await interaction.followup.send("✅ Ads channel has been reset and new message posted.", ephemeral=True)
