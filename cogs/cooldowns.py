@@ -68,7 +68,7 @@ class Cooldowns(commands.Cog):
 
             if found_rarity:
                 special_role = message.guild.get_role(HIGHTIER_ROLE_ID)
-                msg = f"A {found_rarity} has summoned, claim it !"
+                msg = f"A {found_rarity} has summoned, claim it debug!"
                 embed_msg = discord.Embed(description=msg, color=discord.Color.gold())
                 if special_role:
                     await safe_send(message.channel, content=f"{special_role.mention}", embed=embed_msg)
