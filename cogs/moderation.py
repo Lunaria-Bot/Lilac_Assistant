@@ -13,19 +13,18 @@ import redis.asyncio as redis
 log = logging.getLogger("cog-moderation")
 
 # --------- Config via Railway environment ---------
-GUILD_ID = int(os.getenv("GUILD_ID"))
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID"))
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) or None
 REDIS_URL = os.getenv("REDIS_URL")
 
 AUCTION_CAP = int(os.getenv("AUCTION_CAP", "5"))
-ALL_BAN_ROLE_ID = int(os.getenv("ALL_BAN_ROLE_ID"))
 
 CATEGORY_ROLES = {
-    "Auction": int(os.getenv("ROLE_AUCTION")),
-    "Crosstrade": int(os.getenv("ROLE_CROSSTRADE")),
-    "Market": int(os.getenv("ROLE_MARKET")),
-    "Pricing": int(os.getenv("ROLE_PRICING")),
-    "Spawn": int(os.getenv("ROLE_SPAWN")),
+    "Auction": int(os.getenv("ROLE_AUCTION", "0")) or None,
+    "Crosstrade": int(os.getenv("ROLE_CROSSTRADE", "0")) or None,
+    "Market": int(os.getenv("ROLE_MARKET", "0")) or None,
+    "Pricing": int(os.getenv("ROLE_PRICING", "0")) or None,
+    "Spawn": int(os.getenv("ROLE_SPAWN", "0")) or None,
 }
 
 
@@ -66,7 +65,7 @@ class Moderation(commands.Cog):
         self.check_expired.cancel()
         log.info("Moderation cog disconnected from Redis")
 
-    # --------- Background task: remove expired ban roles ---------
+    # --------- Background task: remove expired category ban roles ---------
     @tasks.loop(minutes=1)
     async def check_expired(self):
         guild = self.bot.get_guild(GUILD_ID)
@@ -110,13 +109,7 @@ class Moderation(commands.Cog):
                                     await member.remove_roles(role, reason="Ban expired")
                                 except discord.Forbidden:
                                     pass
-                        elif stype == "all-ban":
-                            role = guild.get_role(ALL_BAN_ROLE_ID)
-                            if role and role in member.roles:
-                                try:
-                                    await member.remove_roles(role, reason="All-ban expired")
-                                except discord.Forbidden:
-                                    pass
+                        # (All-ban server ban is not auto-unbanned here)
                         continue
                 keep.append(raw)
 
@@ -132,6 +125,8 @@ class Moderation(commands.Cog):
 
     # --------- Logging ---------
     async def log_action(self, guild, moderator, action, target=None, reason=None, category=None):
+        if not LOG_CHANNEL_ID:
+            return
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
         if not log_channel:
             return
@@ -163,6 +158,7 @@ class Moderation(commands.Cog):
     async def warn_auction(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         if not await self.is_staff_or_admin(interaction.user):
             return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+
         key = f"warns:auction:{member.id}"
         count = await self.redis.incr(key)
         sanction = {
@@ -173,7 +169,7 @@ class Moderation(commands.Cog):
             "count": count
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
-        # DM
+
         try:
             await member.send(
                 f"⚠️ You have received an Auction Warning in {interaction.guild.name}.\n"
@@ -181,27 +177,21 @@ class Moderation(commands.Cog):
             )
         except discord.Forbidden:
             pass
+
         await self.log_action(interaction.guild, interaction.user, "Warn (Auction)", target=member, reason=f"{reason} • Count {count}", category="auction")
         await interaction.response.send_message(f"⚠️ Auction warning issued to {member.mention} ({count}/{AUCTION_CAP})", ephemeral=True)
 
         if count >= AUCTION_CAP:
-            ban_role = interaction.guild.get_role(ALL_BAN_ROLE_ID)
             applied = False
-            if ban_role:
+            auction_role_id = CATEGORY_ROLES.get("Auction")
+            role = interaction.guild.get_role(auction_role_id) if auction_role_id else None
+            if role:
                 try:
-                    await member.add_roles(ban_role, reason=f"Auction warnings >= {AUCTION_CAP}")
+                    await member.add_roles(role, reason="Auction threshold reached")
                     applied = True
                 except discord.Forbidden:
                     pass
-            auction_role_id = CATEGORY_ROLES.get("Auction")
-            if auction_role_id:
-                role = interaction.guild.get_role(auction_role_id)
-                if role:
-                    try:
-                        await member.add_roles(role, reason="Auction threshold reached")
-                        applied = True
-                    except discord.Forbidden:
-                        pass
+
             await self.log_action(
                 interaction.guild, interaction.user,
                 f"Auction Threshold Action (>= {AUCTION_CAP})",
@@ -209,6 +199,7 @@ class Moderation(commands.Cog):
                 reason=f"Count: {count} • Roles applied: {applied}",
                 category="auction"
             )
+
             try:
                 await member.send(
                     f"⛔ You reached the auction warning threshold in {interaction.guild.name} ({count}/{AUCTION_CAP}).\n"
@@ -222,6 +213,7 @@ class Moderation(commands.Cog):
     async def warn_general(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         if not await self.is_staff_or_admin(interaction.user):
             return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+
         key = f"warns:general:{member.id}"
         count = await self.redis.incr(key)
         sanction = {
@@ -232,7 +224,7 @@ class Moderation(commands.Cog):
             "count": count
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
-        # DM
+
         try:
             await member.send(
                 f"⚠️ You have received a General Warning in {interaction.guild.name}.\n"
@@ -240,6 +232,7 @@ class Moderation(commands.Cog):
             )
         except discord.Forbidden:
             pass
+
         await self.log_action(interaction.guild, interaction.user, "Warn (General)", target=member, reason=f"{reason} • Count {count}", category="general")
         await interaction.response.send_message(f"⚠️ General warning issued to {member.mention} (now at {count})", ephemeral=True)
 
@@ -277,7 +270,6 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
-        # DM the user
         try:
             await member.send(
                 f"🔨 You have been banned from **{category.value}** in **{interaction.guild.name}**.\n"
@@ -301,7 +293,7 @@ class Moderation(commands.Cog):
             ephemeral=True
         )
 
-    # --------- Unban commands ---------
+    # --------- Unban (category role) ---------
     @app_commands.choices(category=[
         app_commands.Choice(name="Auction", value="Auction"),
         app_commands.Choice(name="Market", value="Market"),
@@ -327,22 +319,27 @@ class Moderation(commands.Cog):
         else:
             await interaction.response.send_message("❌ Role not found or not applied.", ephemeral=True)
 
-    # --------- Global ban ---------
-    @app_commands.command(name="all-ban", description="Give a global ban role to a member")
+    # --------- All-ban (server ban) ---------
+    @app_commands.command(name="all-ban", description="Ban a member from the server")
     @app_commands.describe(reason="Reason for the ban", time="Optional duration (e.g. '2 days')")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def all_ban(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: Optional[str] = None):
         if not await self.is_staff_or_admin(interaction.user):
             return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
 
-        role = interaction.guild.get_role(ALL_BAN_ROLE_ID)
-        if not role:
-            return await interaction.response.send_message("❌ Global ban role not found.", ephemeral=True)
+        try:
+            await member.send(
+                f"🚫 You have been **banned** from **{interaction.guild.name}**.\n"
+                f"Reason: {reason}\n"
+                f"Duration: {time or 'Permanent'}"
+            )
+        except discord.Forbidden:
+            pass
 
         try:
-            await member.add_roles(role, reason=reason)
+            await member.ban(reason=reason, delete_message_days=0)
         except discord.Forbidden:
-            return await interaction.response.send_message("❌ Missing permissions to add role.", ephemeral=True)
+            return await interaction.response.send_message("❌ Missing permissions to ban this member.", ephemeral=True)
 
         sanction = {
             "type": "all-ban",
@@ -353,46 +350,23 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
-        # DM the user
-        try:
-            await member.send(
-                f"🚫 You have received a **Global Ban** in **{interaction.guild.name}**.\n"
-                f"Reason: {reason}\n"
-                f"Duration: {time or 'Permanent'}"
-            )
-        except discord.Forbidden:
-            pass
+        await self.log_action(interaction.guild, interaction.user, "All-Ban", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
+        await interaction.response.send_message(f"🚫 {member.mention} has been **banned from the server**.\nReason: {reason}", ephemeral=True)
 
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            "All-Ban",
-            target=member,
-            reason=f"{reason} • Duration: {time or 'Permanent'}",
-            category="ban"
-        )
-
-        await interaction.response.send_message(
-            f"🚫 {member.mention} has been given the **All-Ban role**.\nReason: {reason}",
-            ephemeral=True
-        )
-
-    @app_commands.command(name="all-unban", description="Remove the global ban role from a member")
+    @app_commands.command(name="all-unban", description="Unban a user from the server")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def all_unban(self, interaction: discord.Interaction, member: discord.Member):
+    async def all_unban(self, interaction: discord.Interaction, user_id: int):
         if not await self.is_staff_or_admin(interaction.user):
             return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
 
-        role = interaction.guild.get_role(ALL_BAN_ROLE_ID)
-        if role and role in member.roles:
-            try:
-                await member.remove_roles(role, reason="All-unban command")
-            except discord.Forbidden:
-                return await interaction.response.send_message("❌ Missing permissions to remove role.", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "All-Unban", target=member, category="ban")
-            await interaction.response.send_message(f"✅ {member.mention} global ban removed.", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Global ban role not applied.", ephemeral=True)
+        user = discord.Object(id=user_id)
+        try:
+            await interaction.guild.unban(user, reason="All-unban command")
+        except discord.Forbidden:
+            return await interaction.response.send_message("❌ Missing permissions to unban.", ephemeral=True)
+
+        await self.log_action(interaction.guild, interaction.user, "All-Unban", category="ban")
+        await interaction.response.send_message(f"✅ User <@{user_id}> has been unbanned from the server.", ephemeral=True)
 
     # --------- Timeout ---------
     @app_commands.command(name="timeout", description="Timeout a member")
@@ -417,7 +391,6 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
-        # DM the user
         try:
             await member.send(
                 f"⏳ You have been put in **timeout** in **{interaction.guild.name}**.\n"
@@ -603,8 +576,6 @@ class Moderation(commands.Cog):
         embed.add_field(name="Target", value=tgt_val, inline=True)
         embed.add_field(name="Reason/Details", value=(case.get("reason") or "No reason provided"), inline=False)
         embed.add_field(name="Category", value=(case.get("category") or "—"), inline=True)
-        embed.set_footer(text=f"Case ID #{case_id} • Guild: {guild.name}")
-
         await interaction.response.send_message(embed=embed, ephemeral=True)
         await self.log_action(interaction.guild, interaction.user, "Case Retrieve", reason=f"Retrieved Case #{case_id}")
 
