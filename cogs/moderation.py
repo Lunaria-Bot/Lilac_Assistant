@@ -9,14 +9,12 @@ import redis.asyncio as redis
 
 log = logging.getLogger("cog-moderation")
 
-# --------- Configure these IDs/URL for your server ---------
+# --------- Config ---------
 GUILD_ID = 1293611593845706793
 LOG_CHANNEL_ID = 1421465080238964796
 REDIS_URL = "redis://default:WEQfFAaMkvNPFvEzOpAQsGdDTTbaFzOr@redis-436594b0.railway.internal:6379"
 
-# --------- Auction warning caps (no auto-sanctions) ---------
-LOW_CAP = 6
-HIGH_CAP = 3
+AUCTION_CAP = 5  # single threshold for auction warnings
 
 
 class Moderation(commands.Cog):
@@ -35,13 +33,13 @@ class Moderation(commands.Cog):
             await self.redis.close()
             log.info("Moderation cog disconnected from Redis")
 
-    # --------- Access control helpers ---------
+    # --------- Access control ---------
     async def is_staff_or_admin(self, user: discord.Member) -> bool:
         if user.guild_permissions.administrator:
             return True
         return await self.redis.sismember(self.staff_key, str(user.id))
 
-    # --------- Logging with embeds + case IDs ---------
+    # --------- Logging (embeds + case IDs) ---------
     async def log_action(
         self,
         guild: discord.Guild,
@@ -49,33 +47,29 @@ class Moderation(commands.Cog):
         action: str,
         target: discord.Member = None,
         reason: str = None,
-        severity: str = None,
         category: str = None
     ):
-        """Log staff actions as a color-coded embed and store case data."""
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
         if not log_channel:
             return
 
-        # Increment global case ID
         case_id = await self.redis.incr("moderation:case_id")
 
         # Color coding
         action_l = (action or "").lower()
-        if category == "auction" and severity == "low":
+        if category == "auction":
             color = discord.Color.gold()
-        elif category == "auction" and severity == "high":
-            color = discord.Color.red()
         elif category == "general":
             color = discord.Color.blue()
         elif action_l.startswith("context"):
             color = discord.Color.purple()
         elif action_l.startswith("staff"):
             color = discord.Color.green()
+        elif action_l.startswith("case"):
+            color = discord.Color.dark_gray()
         else:
             color = discord.Color.orange()
 
-        # Build embed
         now = datetime.now(timezone.utc)
         embed = discord.Embed(
             title="👮 Staff Action",
@@ -96,78 +90,59 @@ class Moderation(commands.Cog):
             "moderator_id": moderator.id,
             "target_id": target.id if target else None,
             "reason": reason,
-            "severity": severity,
             "category": category,
             "color": color.value,
             "timestamp": now.isoformat()
         }
         await self.redis.set(f"moderation:case:{case_id}", json.dumps(case_data))
 
-    # --------- Warning management (no auto-sanctions) ---------
-    async def add_warning(
-        self,
-        member: discord.Member,
-        category: str,
-        severity: str,
-        reason: str,
-        moderator: discord.Member
-    ):
-        """Add a warning, log the action, and log threshold alerts (no auto-sanctions)."""
-        key = f"warns:{category}:{member.id}:{severity}"
+    # --------- Commands: Warnings ---------
+    @app_commands.command(name="warn-auction", description="Issue an auction warning")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    async def warn_auction(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        if not await self.is_staff_or_admin(interaction.user):
+            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            return
+
+        key = f"warns:auction:{member.id}"
         count = await self.redis.incr(key)
 
-        # Log the warning itself
+        # DM the user (private)
+        try:
+            await member.send(
+                f"⚠️ You have received an **Auction Warning** in **{interaction.guild.name}**.\n"
+                f"**Reason:** {reason}\n"
+                f"**Issued by:** {interaction.user.display_name}\n"
+                f"**Total Auction Warnings:** {count}/{AUCTION_CAP}"
+            )
+        except discord.Forbidden:
+            pass
+
+        # Log
         await self.log_action(
-            member.guild,
-            moderator,
-            f"Warn ({category.capitalize()} - {severity.capitalize()})",
+            interaction.guild,
+            interaction.user,
+            "Warn (Auction)",
             target=member,
             reason=f"{reason} • Count: {count}",
-            severity=severity,
-            category=category
+            category="auction"
         )
 
-        # Threshold alerts for auction warnings
-        if category == "auction":
-            if severity == "low" and count >= LOW_CAP:
-                await self.log_action(
-                    member.guild,
-                    moderator,
-                    f"Threshold reached ({LOW_CAP} low severity auction warnings)",
-                    target=member,
-                    reason=f"Count: {count}",
-                    severity=severity,
-                    category=category
-                )
-            elif severity == "high" and count >= HIGH_CAP:
-                await self.log_action(
-                    member.guild,
-                    moderator,
-                    f"Threshold reached ({HIGH_CAP} high severity auction warnings)",
-                    target=member,
-                    reason=f"Count: {count}",
-                    severity=severity,
-                    category=category
-                )
+        await interaction.response.send_message(
+            f"⚠️ Auction warning issued to {member.mention} (now at {count}/{AUCTION_CAP})",
+            ephemeral=True
+        )
 
-    # --------- Commands: Warnings ---------
-    @app_commands.command(name="warn-auction-low", description="Issue a low severity auction warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def warn_auction_low(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(interaction.user):
-            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-            return
-        await self.add_warning(member, "auction", "low", reason, interaction.user)
-        await interaction.response.send_message(f"⚠️ Low severity auction warning issued to {member.mention}", ephemeral=True)
-
-    @app_commands.command(name="warn-auction-high", description="Issue a high severity auction warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def warn_auction_high(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(interaction.user):
-            await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-            return
-        await self.add_warning(member, "auction", "high", reason, interaction.user)
-        await interaction.response.send_message(f"⚠️ High severity auction warning issued to {member.mention}", ephemeral=True)
+        # Threshold alert
+        if count >= AUCTION_CAP:
+            await self.log_action(
+                interaction.guild,
+                interaction.user,
+                f"Auction Warning Threshold Reached ({AUCTION_CAP})",
+                target=member,
+                reason=f"Count: {count}",
+                category="auction"
+            )
 
     @app_commands.command(name="warn-general", description="Issue a general warning")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -175,8 +150,22 @@ class Moderation(commands.Cog):
         if not await self.is_staff_or_admin(interaction.user):
             await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
             return
+
         key = f"warns:general:{member.id}"
         count = await self.redis.incr(key)
+
+        # DM the user (private)
+        try:
+            await member.send(
+                f"⚠️ You have received a **General Warning** in **{interaction.guild.name}**.\n"
+                f"**Reason:** {reason}\n"
+                f"**Issued by:** {interaction.user.display_name}\n"
+                f"**Total General Warnings:** {count}"
+            )
+        except discord.Forbidden:
+            pass
+
+        # Log
         await self.log_action(
             interaction.guild,
             interaction.user,
@@ -185,33 +174,37 @@ class Moderation(commands.Cog):
             reason=f"{reason} • Count: {count}",
             category="general"
         )
-        await interaction.response.send_message(f"⚠️ General warning issued to {member.mention}", ephemeral=True)
 
+        await interaction.response.send_message(
+            f"⚠️ General warning issued to {member.mention} (now at {count})",
+            ephemeral=True
+        )
+
+    # --------- Commands: Warnings view/clear ---------
     @app_commands.command(name="warnings", description="Check a user's warnings")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
         if not await self.is_staff_or_admin(interaction.user):
             await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
             return
-        low = int(await self.redis.get(f"warns:auction:{member.id}:low") or 0)
-        high = int(await self.redis.get(f"warns:auction:{member.id}:high") or 0)
+
+        auction = int(await self.redis.get(f"warns:auction:{member.id}") or 0)
         general = int(await self.redis.get(f"warns:general:{member.id}") or 0)
 
         text = (
             f"📊 Warnings for {member.mention}:\n"
-            f"- Auction (low): {low}/{LOW_CAP}\n"
-            f"- Auction (high): {high}/{HIGH_CAP}\n"
+            f"- Auction: {auction}/{AUCTION_CAP}\n"
             f"- General: {general}"
         )
         await interaction.response.send_message(text, ephemeral=True)
 
-        # Audit log for viewing warnings
+        # Audit log (view)
         await self.log_action(
             interaction.guild,
             interaction.user,
             "Warnings View",
             target=member,
-            reason=f"Auction low={low}, high={high}; General={general}"
+            reason=f"Auction={auction}, General={general}"
         )
 
     @app_commands.command(name="clear-warnings", description="Clear a user's warnings")
@@ -222,8 +215,7 @@ class Moderation(commands.Cog):
             return
 
         if category == "auction":
-            await self.redis.delete(f"warns:auction:{member.id}:low")
-            await self.redis.delete(f"warns:auction:{member.id}:high")
+            await self.redis.delete(f"warns:auction:{member.id}")
         elif category == "general":
             await self.redis.delete(f"warns:general:{member.id}")
         else:
@@ -231,14 +223,9 @@ class Moderation(commands.Cog):
             return
 
         await interaction.response.send_message(f"✅ Cleared {category} warnings for {member.mention}", ephemeral=True)
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            f"Clear Warnings ({category})",
-            target=member
-        )
+        await self.log_action(interaction.guild, interaction.user, f"Clear Warnings ({category})", target=member)
 
-    # --------- Commands: Context notes ---------
+    # --------- Commands: Context Notes ---------
     @app_commands.command(name="context", description="Add, list, or clear context notes for a user")
     @app_commands.describe(action="add/list/clear", note="Only required if action is 'add'")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -391,10 +378,13 @@ class Moderation(commands.Cog):
         except Exception:
             ts = datetime.now(timezone.utc)
 
+        # color is stored as int; rebuild from value
+        color = discord.Color(case["color"])
+
         embed = discord.Embed(
             title="👮 Staff Action (Retrieved)",
             description=f"**{case['action']}**",
-            color=discord.Color(case["color"]),
+            color=color,
             timestamp=ts
         )
         mod_val = moderator.mention if moderator else f"<@{case['moderator_id']}>"
