@@ -65,16 +65,7 @@ class Cooldowns(commands.Cog):
                         break
                 if found_rarity:
                     break
-
-            if found_rarity:
-                special_role = message.guild.get_role(HIGHTIER_ROLE_ID)
-                msg = f"A {found_rarity} has summoned, claim it debug!"
-                embed_msg = discord.Embed(description=msg, color=discord.Color.gold())
-                if special_role:
-                    await safe_send(message.channel, content=f"{special_role.mention}", embed=embed_msg)
-                else:
-                    await safe_send(message.channel, embed=embed_msg)
-                log.info("⚡ High-tier spawn detected: %s", found_rarity)
+            # Ici on ne fait plus rien si une rareté est trouvée
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Cooldowns(bot))
