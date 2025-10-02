@@ -33,14 +33,20 @@ def parse_duration_to_timedelta(duration: Optional[str]) -> Optional[timedelta]:
         return None
     s = duration.strip().lower()
     try:
-        if "min" in s:
+        # minutes
+        if s.endswith("minutes") or s.endswith("minute") or s.endswith("mins") or s.endswith("min"):
+            n = int(s.split()[0]) if " " in s else int(s.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", ""))
+            return timedelta(minutes=n)
+        if "min" in s and " " in s:
             n = int(s.split()[0])
             return timedelta(minutes=n)
-        if "hour" in s or s.endswith("h"):
-            n = int(s.split()[0].replace("h", "")) if " " in s else int(s.strip("h"))
+        # hours
+        if s.endswith("hours") or s.endswith("hour") or s.endswith("h"):
+            n = int(s.split()[0]) if " " in s else int(s.replace("h", "").replace("hours", "").replace("hour", ""))
             return timedelta(hours=n)
-        if "day" in s or s.endswith("d"):
-            n = int(s.split()[0].replace("d", "")) if " " in s else int(s.strip("d"))
+        # days
+        if s.endswith("days") or s.endswith("day") or s.endswith("d"):
+            n = int(s.split()[0]) if " " in s else int(s.replace("d", "").replace("days", "").replace("day", ""))
             return timedelta(days=n)
     except Exception:
         return None
@@ -65,7 +71,7 @@ class Moderation(commands.Cog):
         self.check_expired.cancel()
         log.info("Moderation cog disconnected from Redis")
 
-    # --------- Background task: remove expired category ban roles ---------
+    # --------- Background task: remove expired sanctions ---------
     @tasks.loop(minutes=1)
     async def check_expired(self):
         guild = self.bot.get_guild(GUILD_ID)
@@ -73,15 +79,17 @@ class Moderation(commands.Cog):
             return
 
         keys = await self.redis.keys("sanctions:*")
+        now = datetime.now(timezone.utc)
+
         for key in keys:
-            member_id = int(key.split(":")[1])
-            member = guild.get_member(member_id)
-            if not member:
+            try:
+                member_id = int(key.split(":")[1])
+            except Exception:
                 continue
 
+            member = guild.get_member(member_id)
             sanctions = await self.redis.lrange(key, 0, -1)
             keep: List[str] = []
-            now = datetime.now(timezone.utc)
 
             for raw in sanctions:
                 try:
@@ -93,14 +101,18 @@ class Moderation(commands.Cog):
                 duration = s.get("duration")
                 start_iso = s.get("timestamp")
                 td = parse_duration_to_timedelta(duration)
+
                 if td and start_iso:
                     try:
                         start = datetime.fromisoformat(start_iso)
                     except Exception:
                         start = None
+
                     if start and now >= (start + td):
                         stype = s.get("type")
-                        if stype == "ban-role":
+
+                        # --- Expiration d’un ban par rôle ---
+                        if stype == "ban-role" and member:
                             cat = s.get("category")
                             role_id = CATEGORY_ROLES.get(cat)
                             role = guild.get_role(role_id) if role_id else None
@@ -109,10 +121,42 @@ class Moderation(commands.Cog):
                                     await member.remove_roles(role, reason="Ban expired")
                                 except discord.Forbidden:
                                     pass
-                        # (All-ban server ban is not auto-unbanned here)
+
+                        # --- Expiration d’un timeout ---
+                        elif stype == "timeout":
+                            # Discord retire déjà le timeout automatiquement
+                            pass
+
+                        # --- Expiration d’un all-ban (ban serveur) ---
+                        elif stype == "all-ban":
+                            try:
+                                await guild.unban(discord.Object(id=member_id), reason="Tempban expired")
+
+                                # --- LOG AUTO UNBAN ---
+                                if LOG_CHANNEL_ID:
+                                    log_channel = guild.get_channel(LOG_CHANNEL_ID)
+                                    if log_channel:
+                                        embed = discord.Embed(
+                                            title="⏳ Tempban expired",
+                                            description=f"User <@{member_id}> has been automatically unbanned after serving their tempban.",
+                                            color=discord.Color.green(),
+                                            timestamp=datetime.now(timezone.utc)
+                                        )
+                                        embed.set_footer(text="Auto-Unban • System Action")
+                                        await log_channel.send(embed=embed)
+
+                            except discord.NotFound:
+                                pass
+                            except discord.Forbidden:
+                                pass
+
+                        # On ne garde pas cette sanction (elle est expirée)
                         continue
+
+                # Si pas expirée, on la garde
                 keep.append(raw)
 
+            # Réécriture de la liste des sanctions
             await self.redis.delete(key)
             if keep:
                 await self.redis.rpush(key, *keep)
@@ -124,7 +168,7 @@ class Moderation(commands.Cog):
         return await self.redis.sismember(self.staff_key, str(user.id))
 
     # --------- Logging ---------
-    async def log_action(self, guild, moderator, action, target=None, reason=None, category=None):
+    async def log_action(self, guild: discord.Guild, moderator: discord.Member, action: str, target: Optional[discord.Member] = None, reason: Optional[str] = None, category: Optional[str] = None):
         if not LOG_CHANNEL_ID:
             return
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
@@ -170,6 +214,7 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
+        # DM
         try:
             await member.send(
                 f"⚠️ You have received an Auction Warning in {interaction.guild.name}.\n"
@@ -180,33 +225,6 @@ class Moderation(commands.Cog):
 
         await self.log_action(interaction.guild, interaction.user, "Warn (Auction)", target=member, reason=f"{reason} • Count {count}", category="auction")
         await interaction.response.send_message(f"⚠️ Auction warning issued to {member.mention} ({count}/{AUCTION_CAP})", ephemeral=True)
-
-        if count >= AUCTION_CAP:
-            applied = False
-            auction_role_id = CATEGORY_ROLES.get("Auction")
-            role = interaction.guild.get_role(auction_role_id) if auction_role_id else None
-            if role:
-                try:
-                    await member.add_roles(role, reason="Auction threshold reached")
-                    applied = True
-                except discord.Forbidden:
-                    pass
-
-            await self.log_action(
-                interaction.guild, interaction.user,
-                f"Auction Threshold Action (>= {AUCTION_CAP})",
-                target=member,
-                reason=f"Count: {count} • Roles applied: {applied}",
-                category="auction"
-            )
-
-            try:
-                await member.send(
-                    f"⛔ You reached the auction warning threshold in {interaction.guild.name} ({count}/{AUCTION_CAP}).\n"
-                    f"Moderation actions were applied. You can appeal to the staff."
-                )
-            except discord.Forbidden:
-                pass
 
     @app_commands.command(name="warn-general", description="Issue a general warning")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -225,6 +243,7 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
+        # DM
         try:
             await member.send(
                 f"⚠️ You have received a General Warning in {interaction.guild.name}.\n"
@@ -270,11 +289,11 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
+        # DM
         try:
             await member.send(
                 f"🔨 You have been banned from **{category.value}** in **{interaction.guild.name}**.\n"
-                f"Reason: {reason}\n"
-                f"Duration: {time or 'Permanent'}"
+                f"Reason: {reason}\nDuration: {time or 'Permanent'}"
             )
         except discord.Forbidden:
             pass
@@ -327,6 +346,7 @@ class Moderation(commands.Cog):
         if not await self.is_staff_or_admin(interaction.user):
             return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
 
+        # DM before ban
         try:
             await member.send(
                 f"🚫 You have been **banned** from **{interaction.guild.name}**.\n"
@@ -364,6 +384,8 @@ class Moderation(commands.Cog):
             await interaction.guild.unban(user, reason="All-unban command")
         except discord.Forbidden:
             return await interaction.response.send_message("❌ Missing permissions to unban.", ephemeral=True)
+        except discord.NotFound:
+            return await interaction.response.send_message("ℹ️ User not found in ban list.", ephemeral=True)
 
         await self.log_action(interaction.guild, interaction.user, "All-Unban", category="ban")
         await interaction.response.send_message(f"✅ User <@{user_id}> has been unbanned from the server.", ephemeral=True)
@@ -391,6 +413,7 @@ class Moderation(commands.Cog):
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
 
+        # DM
         try:
             await member.send(
                 f"⏳ You have been put in **timeout** in **{interaction.guild.name}**.\n"
