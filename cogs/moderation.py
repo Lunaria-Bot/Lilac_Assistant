@@ -3,7 +3,7 @@ import os
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List
+from typing import Optional, List, Union
 
 import discord
 from discord.ext import commands, tasks
@@ -12,7 +12,7 @@ import redis.asyncio as redis
 
 log = logging.getLogger("cog-moderation")
 
-# --------- Config via Railway environment ---------
+# --------- Config via environment ---------
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) or None
 REDIS_URL = os.getenv("REDIS_URL")
@@ -27,26 +27,29 @@ CATEGORY_ROLES = {
     "Spawn": int(os.getenv("ROLE_SPAWN", "0")) or None,
 }
 
-
+# --------- Utils ---------
 def parse_duration_to_timedelta(duration: Optional[str]) -> Optional[timedelta]:
     if not duration:
         return None
     s = duration.strip().lower()
     try:
         # minutes
-        if s.endswith("minutes") or s.endswith("minute") or s.endswith("mins") or s.endswith("min"):
-            n = int(s.split()[0]) if " " in s else int(s.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", ""))
-            return timedelta(minutes=n)
-        if "min" in s and " " in s:
-            n = int(s.split()[0])
+        if s.endswith(("minutes", "minute", "mins", "min")) or "min" in s:
+            n = int(s.split()[0]) if " " in s else int(
+                s.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", "")
+            )
             return timedelta(minutes=n)
         # hours
-        if s.endswith("hours") or s.endswith("hour") or s.endswith("h"):
-            n = int(s.split()[0]) if " " in s else int(s.replace("h", "").replace("hours", "").replace("hour", ""))
+        if s.endswith(("hours", "hour", "h")) or s.endswith("h"):
+            n = int(s.split()[0]) if " " in s else int(
+                s.replace("h", "").replace("hours", "").replace("hour", "")
+            )
             return timedelta(hours=n)
         # days
-        if s.endswith("days") or s.endswith("day") or s.endswith("d"):
-            n = int(s.split()[0]) if " " in s else int(s.replace("d", "").replace("days", "").replace("day", ""))
+        if s.endswith(("days", "day", "d")) or s.endswith("d"):
+            n = int(s.split()[0]) if " " in s else int(
+                s.replace("d", "").replace("days", "").replace("day", "")
+            )
             return timedelta(days=n)
     except Exception:
         return None
@@ -62,19 +65,20 @@ class Moderation(commands.Cog):
         self.check_expired.start()
 
     async def cog_load(self):
-        self.redis = redis.from_url(REDIS_URL, decode_responses=True)
-        log.info("Moderation cog connected to Redis")
+        # Réutilise Redis du bot si disponible, sinon crée la connexion
+        self.redis = getattr(self.bot, "redis", None)
+        if not self.redis and REDIS_URL:
+            self.redis = redis.from_url(REDIS_URL, decode_responses=True)
+        log.info("Moderation cog ready (Redis=%s)", "shared" if getattr(self.bot, "redis", None) else "own")
 
     async def cog_unload(self):
-        if self.redis:
-            await self.redis.close()
         self.check_expired.cancel()
-        log.info("Moderation cog disconnected from Redis")
+        log.info("Moderation cog unloaded")
 
     # --------- Background task: remove expired sanctions ---------
     @tasks.loop(minutes=1)
     async def check_expired(self):
-        guild = self.bot.get_guild(GUILD_ID)
+        guild = self.bot.get_guild(GUILD_ID) if GUILD_ID else None
         if not guild or not self.redis:
             return
 
@@ -111,7 +115,7 @@ class Moderation(commands.Cog):
                     if start and now >= (start + td):
                         stype = s.get("type")
 
-                        # --- Expiration d’un ban par rôle ---
+                        # --- Expiration ban par rôle ---
                         if stype == "ban-role" and member:
                             cat = s.get("category")
                             role_id = CATEGORY_ROLES.get(cat)
@@ -122,17 +126,17 @@ class Moderation(commands.Cog):
                                 except discord.Forbidden:
                                     pass
 
-                        # --- Expiration d’un timeout ---
+                        # --- Expiration timeout ---
                         elif stype == "timeout":
                             # Discord retire déjà le timeout automatiquement
                             pass
 
-                        # --- Expiration d’un all-ban (ban serveur) ---
+                        # --- Expiration all-ban (ban serveur) ---
                         elif stype == "all-ban":
                             try:
                                 await guild.unban(discord.Object(id=member_id), reason="Tempban expired")
 
-                                # --- LOG AUTO UNBAN ---
+                                # LOG auto-unban
                                 if LOG_CHANNEL_ID:
                                     log_channel = guild.get_channel(LOG_CHANNEL_ID)
                                     if log_channel:
@@ -144,32 +148,37 @@ class Moderation(commands.Cog):
                                         )
                                         embed.set_footer(text="Auto-Unban • System Action")
                                         await log_channel.send(embed=embed)
-
-                            except discord.NotFound:
-                                pass
-                            except discord.Forbidden:
+                            except (discord.NotFound, discord.Forbidden):
                                 pass
 
-                        # On ne garde pas cette sanction (elle est expirée)
+                        # Sanction expirée → on ne la garde pas
                         continue
 
-                # Si pas expirée, on la garde
+                # Pas expirée → on la garde
                 keep.append(raw)
 
-            # Réécriture de la liste des sanctions
+            # Réécrit la liste
             await self.redis.delete(key)
             if keep:
                 await self.redis.rpush(key, *keep)
 
     # --------- Access control ---------
-    async def is_staff_or_admin(self, user: discord.Member) -> bool:
-        if user.guild_permissions.administrator:
+    async def is_staff_or_admin(self, member: discord.Member) -> bool:
+        if member.guild_permissions.administrator:
             return True
-        return await self.redis.sismember(self.staff_key, str(user.id))
+        return await self.redis.sismember(self.staff_key, str(member.id))
 
     # --------- Logging ---------
-    async def log_action(self, guild: discord.Guild, moderator: discord.Member, action: str, target: Optional[discord.Member] = None, reason: Optional[str] = None, category: Optional[str] = None):
-        if not LOG_CHANNEL_ID:
+    async def log_action(
+        self,
+        guild: discord.Guild,
+        moderator: Union[discord.Member, discord.User],
+        action: str,
+        target: Optional[discord.Member] = None,
+        reason: Optional[str] = None,
+        category: Optional[str] = None
+    ):
+        if not LOG_CHANNEL_ID or not self.redis:
             return
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
         if not log_channel:
@@ -181,7 +190,7 @@ class Moderation(commands.Cog):
             color=discord.Color.blurple(),
             timestamp=datetime.now(timezone.utc)
         )
-        embed.add_field(name="Moderator", value=moderator.mention, inline=True)
+        embed.add_field(name="Moderator", value=(getattr(moderator, "mention", f"<@{moderator.id}>")), inline=True)
         embed.add_field(name="Target", value=(target.mention if target else "—"), inline=True)
         embed.add_field(name="Reason/Details", value=(reason or "No reason"), inline=False)
         embed.set_footer(text=f"Case ID #{case_id}")
@@ -196,423 +205,276 @@ class Moderation(commands.Cog):
             "timestamp": datetime.now(timezone.utc).isoformat()
         }))
 
-    # --------- Warns ---------
-    @app_commands.command(name="warn-auction", description="Issue an auction warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def warn_auction(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+    # --------- Core logic helpers (used by slash + prefix) ---------
+    async def send_dm_safe(self, member: discord.Member, text: str):
+        try:
+            await member.send(text)
+        except discord.Forbidden:
+            pass
 
+    async def reply(self, ctx_or_inter, text: str, *, ephemeral: bool = True):
+        if isinstance(ctx_or_inter, discord.Interaction):
+            await ctx_or_inter.response.send_message(text, ephemeral=ephemeral)
+        else:
+            await ctx_or_inter.send(text)
+
+    # Warn auction
+    async def do_warn_auction(self, source, guild, moderator, member: discord.Member, reason: str):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         key = f"warns:auction:{member.id}"
         count = await self.redis.incr(key)
         sanction = {
             "type": "warn-auction",
             "reason": reason,
-            "moderator": interaction.user.id,
+            "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "count": count
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
+        await self.send_dm_safe(member, f"⚠️ Auction Warning in {guild.name}\nReason: {reason}\nTotal: {count}/{AUCTION_CAP}")
+        await self.log_action(guild, moderator, "Warn (Auction)", target=member, reason=f"{reason} • Count {count}", category="auction")
+        await self.reply(source, f"⚠️ Auction warning issued to {member.mention} ({count}/{AUCTION_CAP})")
 
-        # DM
-        try:
-            await member.send(
-                f"⚠️ You have received an Auction Warning in {interaction.guild.name}.\n"
-                f"Reason: {reason}\nTotal Auction Warnings: {count}/{AUCTION_CAP}"
-            )
-        except discord.Forbidden:
-            pass
-
-        await self.log_action(interaction.guild, interaction.user, "Warn (Auction)", target=member, reason=f"{reason} • Count {count}", category="auction")
-        await interaction.response.send_message(f"⚠️ Auction warning issued to {member.mention} ({count}/{AUCTION_CAP})", ephemeral=True)
-
-    @app_commands.command(name="warn-general", description="Issue a general warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def warn_general(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # Warn general
+    async def do_warn_general(self, source, guild, moderator, member: discord.Member, reason: str):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         key = f"warns:general:{member.id}"
         count = await self.redis.incr(key)
         sanction = {
             "type": "warn-general",
             "reason": reason,
-            "moderator": interaction.user.id,
+            "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "count": count
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
+        await self.send_dm_safe(member, f"⚠️ General Warning in {guild.name}\nReason: {reason}\nTotal: {count}")
+        await self.log_action(guild, moderator, "Warn (General)", target=member, reason=f"{reason} • Count {count}", category="general")
+        await self.reply(source, f"⚠️ General warning issued to {member.mention} (now at {count})")
 
-        # DM
-        try:
-            await member.send(
-                f"⚠️ You have received a General Warning in {interaction.guild.name}.\n"
-                f"Reason: {reason}\nTotal General Warnings: {count}"
-            )
-        except discord.Forbidden:
-            pass
-
-        await self.log_action(interaction.guild, interaction.user, "Warn (General)", target=member, reason=f"{reason} • Count {count}", category="general")
-        await interaction.response.send_message(f"⚠️ General warning issued to {member.mention} (now at {count})", ephemeral=True)
-
-    # --------- Ban (category role) ---------
-    @app_commands.choices(category=[
-        app_commands.Choice(name="Auction", value="Auction"),
-        app_commands.Choice(name="Market", value="Market"),
-        app_commands.Choice(name="Crosstrade", value="Crosstrade"),
-        app_commands.Choice(name="Spawn", value="Spawn"),
-        app_commands.Choice(name="Pricing", value="Pricing")
-    ])
-    @app_commands.command(name="ban", description="Give a ban role to a member by category")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def ban(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str], reason: str, time: Optional[str] = None):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        role_id = CATEGORY_ROLES.get(category.value)
-        role = interaction.guild.get_role(role_id) if role_id else None
+    # Ban role
+    async def do_ban_role(self, source, guild, moderator, member: discord.Member, category: str, reason: str, time: Optional[str]):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        role_id = CATEGORY_ROLES.get(category)
+        role = guild.get_role(role_id) if role_id else None
         if not role:
-            return await interaction.response.send_message("❌ Role not found in guild.", ephemeral=True)
-
+            return await self.reply(source, "❌ Role not found in guild.")
         try:
             await member.add_roles(role, reason=reason)
         except discord.Forbidden:
-            return await interaction.response.send_message("❌ Missing permissions to add role.", ephemeral=True)
-
+            return await self.reply(source, "❌ Missing permissions to add role.")
         sanction = {
             "type": "ban-role",
-            "category": category.value,
+            "category": category,
             "reason": reason,
-            "moderator": interaction.user.id,
+            "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration": time
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
+        await self.send_dm_safe(member, f"🔨 Banned from {category} in {guild.name}\nReason: {reason}\nDuration: {time or 'Permanent'}")
+        await self.log_action(guild, moderator, f"Ban Role ({category})", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
+        await self.reply(source, f"🔨 {member.mention} has been given the **{category}** ban role.\nReason: {reason}")
 
-        # DM
-        try:
-            await member.send(
-                f"🔨 You have been banned from **{category.value}** in **{interaction.guild.name}**.\n"
-                f"Reason: {reason}\nDuration: {time or 'Permanent'}"
-            )
-        except discord.Forbidden:
-            pass
-
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            f"Ban Role ({category.value})",
-            target=member,
-            reason=f"{reason} • Duration: {time or 'Permanent'}",
-            category="ban"
-        )
-
-        await interaction.response.send_message(
-            f"🔨 {member.mention} has been given the **{category.value}** ban role.\nReason: {reason}",
-            ephemeral=True
-        )
-
-    # --------- Unban (category role) ---------
-    @app_commands.choices(category=[
-        app_commands.Choice(name="Auction", value="Auction"),
-        app_commands.Choice(name="Market", value="Market"),
-        app_commands.Choice(name="Crosstrade", value="Crosstrade"),
-        app_commands.Choice(name="Spawn", value="Spawn"),
-        app_commands.Choice(name="Pricing", value="Pricing")
-    ])
-    @app_commands.command(name="unban", description="Remove a category ban role from a member")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def unban(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        role_id = CATEGORY_ROLES.get(category.value)
-        role = interaction.guild.get_role(role_id) if role_id else None
+    # Unban role
+    async def do_unban_role(self, source, guild, moderator, member: discord.Member, category: str):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        role_id = CATEGORY_ROLES.get(category)
+        role = guild.get_role(role_id) if role_id else None
         if role and role in member.roles:
             try:
                 await member.remove_roles(role, reason="Unban command")
             except discord.Forbidden:
-                return await interaction.response.send_message("❌ Missing permissions to remove role.", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, f"Unban ({category.value})", target=member, category="ban")
-            await interaction.response.send_message(f"✅ {member.mention} unbanned from {category.value}", ephemeral=True)
+                return await self.reply(source, "❌ Missing permissions to remove role.")
+            await self.log_action(guild, moderator, f"Unban ({category})", target=member, category="ban")
+            await self.reply(source, f"✅ {member.mention} unbanned from {category}")
         else:
-            await interaction.response.send_message("❌ Role not found or not applied.", ephemeral=True)
+            await self.reply(source, "❌ Role not found or not applied.")
 
-    # --------- All-ban (server ban) ---------
-    @app_commands.command(name="all-ban", description="Ban a member from the server")
-    @app_commands.describe(reason="Reason for the ban", time="Optional duration (e.g. '2 days')")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def all_ban(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: Optional[str] = None):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        # DM before ban
-        try:
-            await member.send(
-                f"🚫 You have been **banned** from **{interaction.guild.name}**.\n"
-                f"Reason: {reason}\n"
-                f"Duration: {time or 'Permanent'}"
-            )
-        except discord.Forbidden:
-            pass
-
+    # All-ban server
+    async def do_all_ban(self, source, guild, moderator, member: discord.Member, reason: str, time: Optional[str]):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        await self.send_dm_safe(member, f"🚫 Banned from {guild.name}\nReason: {reason}\nDuration: {time or 'Permanent'}")
         try:
             await member.ban(reason=reason, delete_message_days=0)
         except discord.Forbidden:
-            return await interaction.response.send_message("❌ Missing permissions to ban this member.", ephemeral=True)
-
+            return await self.reply(source, "❌ Missing permissions to ban this member.")
         sanction = {
             "type": "all-ban",
             "reason": reason,
-            "moderator": interaction.user.id,
+            "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration": time
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
+        await self.log_action(guild, moderator, "All-Ban", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
+        await self.reply(source, f"🚫 {member.mention} has been banned from the server.\nReason: {reason}")
 
-        await self.log_action(interaction.guild, interaction.user, "All-Ban", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
-        await interaction.response.send_message(f"🚫 {member.mention} has been **banned from the server**.\nReason: {reason}", ephemeral=True)
-
-    @app_commands.command(name="all-unban", description="Unban a user from the server")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def all_unban(self, interaction: discord.Interaction, user_id: int):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        user = discord.Object(id=user_id)
+    # All-unban server
+    async def do_all_unban(self, source, guild, moderator, user_id: int):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        obj = discord.Object(id=user_id)
         try:
-            await interaction.guild.unban(user, reason="All-unban command")
-        except discord.Forbidden:
-            return await interaction.response.send_message("❌ Missing permissions to unban.", ephemeral=True)
+            await guild.unban(obj, reason="All-unban command")
         except discord.NotFound:
-            return await interaction.response.send_message("ℹ️ User not found in ban list.", ephemeral=True)
+            return await self.reply(source, "ℹ️ User not found in ban list.")
+        except discord.Forbidden:
+            return await self.reply(source, "❌ Missing permissions to unban.")
+        await self.log_action(guild, moderator, "All-Unban", category="ban")
+        await self.reply(source, f"✅ User <@{user_id}> has been unbanned from the server.")
 
-        await self.log_action(interaction.guild, interaction.user, "All-Unban", category="ban")
-        await interaction.response.send_message(f"✅ User <@{user_id}> has been unbanned from the server.", ephemeral=True)
-
-    # --------- Timeout ---------
-    @app_commands.command(name="timeout", description="Timeout a member")
-    @app_commands.describe(reason="Reason for the timeout", time="Duration in minutes")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def timeout(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: int):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        until = datetime.now(timezone.utc) + timedelta(minutes=time)
+    # Timeout
+    async def do_timeout(self, source, guild, moderator, member: discord.Member, reason: str, minutes: int):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         try:
             await member.timeout(until, reason=reason)
         except Exception as e:
-            return await interaction.response.send_message(f"❌ Failed to timeout: {e}", ephemeral=True)
-
+            return await self.reply(source, f"❌ Failed to timeout: {e}")
         sanction = {
             "type": "timeout",
             "reason": reason,
-            "moderator": interaction.user.id,
+            "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "duration": f"{time} minutes"
+            "duration": f"{minutes} minutes"
         }
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
+        await self.send_dm_safe(member, f"⏳ Timeout in {guild.name}\nReason: {reason}\nDuration: {minutes} minutes")
+        await self.log_action(guild, moderator, "Timeout", target=member, reason=f"{reason} • Duration: {minutes} minutes", category="timeout")
+        await self.reply(source, f"⏳ {member.mention} timed out for {minutes} minutes.\nReason: {reason}")
 
-        # DM
-        try:
-            await member.send(
-                f"⏳ You have been put in **timeout** in **{interaction.guild.name}**.\n"
-                f"Reason: {reason}\n"
-                f"Duration: {time} minutes"
-            )
-        except discord.Forbidden:
-            pass
-
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            "Timeout",
-            target=member,
-            reason=f"{reason} • Duration: {time} minutes",
-            category="timeout"
-        )
-
-        await interaction.response.send_message(
-            f"⏳ {member.mention} has been timed out for {time} minutes.\nReason: {reason}",
-            ephemeral=True
-        )
-
-    # --------- Warnings view/clear ---------
-    @app_commands.command(name="warnings", description="Check a user's warnings")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def warnings(self, interaction: discord.Interaction, member: discord.Member):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # Warnings view
+    async def do_warnings(self, source, guild, moderator, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         auction = int(await self.redis.get(f"warns:auction:{member.id}") or 0)
         general = int(await self.redis.get(f"warns:general:{member.id}") or 0)
+        text = f"📊 Warnings for {member.mention}:\n- Auction: {auction}/{AUCTION_CAP}\n- General: {general}"
+        await self.reply(source, text)
+        await self.log_action(guild, moderator, "Warnings View", target=member, reason=f"Auction={auction}, General={general}")
 
-        text = (
-            f"📊 Warnings for {member.mention}:\n"
-            f"- Auction: {auction}/{AUCTION_CAP}\n"
-            f"- General: {general}"
-        )
-        await interaction.response.send_message(text, ephemeral=True)
-
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            "Warnings View",
-            target=member,
-            reason=f"Auction={auction}, General={general}"
-        )
-
-    @app_commands.describe(category="Choose category to clear")
-    @app_commands.choices(category=[
-        app_commands.Choice(name="auction", value="auction"),
-        app_commands.Choice(name="general", value="general"),
-    ])
-    @app_commands.command(name="clear-warnings", description="Clear a user's warnings")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def clear_warnings(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-        if category.value == "auction":
+    # Clear warnings
+    async def do_clear_warnings(self, source, guild, moderator, member: discord.Member, category_key: str):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
+        if category_key == "auction":
             await self.redis.delete(f"warns:auction:{member.id}")
         else:
             await self.redis.delete(f"warns:general:{member.id}")
+        await self.reply(source, f"✅ Cleared {category_key} warnings for {member.mention}")
+        await self.log_action(guild, moderator, f"Clear Warnings ({category_key})", target=member)
 
-        await interaction.response.send_message(f"✅ Cleared {category.value} warnings for {member.mention}", ephemeral=True)
-        await self.log_action(interaction.guild, interaction.user, f"Clear Warnings ({category.value})", target=member)
-
-    # --------- Context notes ---------
-    @app_commands.describe(action="Select action", note="Only required when adding")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="add", value="add"),
-        app_commands.Choice(name="list", value="list"),
-        app_commands.Choice(name="clear", value="clear"),
-    ])
-    @app_commands.command(name="context", description="Add, list, or clear context notes for a user")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def context(self, interaction: discord.Interaction, member: discord.Member, action: app_commands.Choice[str], note: Optional[str] = None):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # Context notes
+    async def do_context(self, source, guild, moderator, member: discord.Member, action: str, note: Optional[str]):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         key = f"context:{member.id}"
-
-        if action.value == "add":
+        if action == "add":
             if not note:
-                return await interaction.response.send_message("❌ You must provide a note when adding.", ephemeral=True)
+                return await self.reply(source, "❌ You must provide a note when adding.")
             if len(note) > 500:
-                return await interaction.response.send_message("❌ Note too long (max 500 chars).", ephemeral=True)
+                return await self.reply(source, "❌ Note too long (max 500 chars).")
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            entry = f"[{timestamp}] {interaction.user.display_name}: {note}"
+            entry = f"[{timestamp}] {getattr(moderator, 'display_name', 'Staff')}: {note}"
             await self.redis.rpush(key, entry)
-            await interaction.response.send_message(f"📝 Added context note for {member.mention}", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Context Add", target=member, reason=entry)
-
-        elif action.value == "list":
+            await self.reply(source, f"📝 Added context note for {member.mention}")
+            await self.log_action(guild, moderator, "Context Add", target=member, reason=entry)
+        elif action == "list":
             notes = await self.redis.lrange(key, 0, -1)
             if not notes:
-                await interaction.response.send_message("📭 No context notes for this user.", ephemeral=True)
-                await self.log_action(interaction.guild, interaction.user, "Context List", target=member, reason="No notes")
+                await self.reply(source, "📭 No context notes for this user.")
+                await self.log_action(guild, moderator, "Context List", target=member, reason="No notes")
                 return
             formatted = "\n".join(notes[:20])
             more = f"\n… and {len(notes)-20} more." if len(notes) > 20 else ""
-            await interaction.response.send_message(f"📒 Context notes for {member.mention}:\n{formatted}{more}", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Context List", target=member, reason=f"Listed {len(notes)} notes")
-
-        else:
+            await self.reply(source, f"📒 Context notes for {member.mention}:\n{formatted}{more}")
+            await self.log_action(guild, moderator, "Context List", target=member, reason=f"Listed {len(notes)} notes")
+        elif action == "clear":
             await self.redis.delete(key)
-            await interaction.response.send_message(f"🗑️ Cleared all context notes for {member.mention}", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Context Clear", target=member, reason="Cleared notes")
-
-    # --------- Staff management (admins only) ---------
-    @app_commands.describe(action="Select action")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="add", value="add"),
-        app_commands.Choice(name="remove", value="remove"),
-        app_commands.Choice(name="list", value="list"),
-    ])
-    @app_commands.command(name="staff", description="Manage staff list (admins only)")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def staff(self, interaction: discord.Interaction, action: app_commands.Choice[str], member: Optional[discord.Member] = None):
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("⛔ Only administrators can manage staff.", ephemeral=True)
-
-        if action.value == "add":
-            if not member:
-                return await interaction.response.send_message("❌ You must specify a user to add.", ephemeral=True)
-            await self.redis.sadd(self.staff_key, str(member.id))
-            await interaction.response.send_message(f"✅ {member.mention} added to staff list.", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Staff Add", target=member, reason="Added to internal staff list")
-
-        elif action.value == "remove":
-            if not member:
-                return await interaction.response.send_message("❌ You must specify a user to remove.", ephemeral=True)
-            await self.redis.srem(self.staff_key, str(member.id))
-            await interaction.response.send_message(f"✅ {member.mention} removed from staff list.", ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Staff Remove", target=member, reason="Removed from internal staff list")
-
+            await self.reply(source, f"🗑️ Cleared all context notes for {member.mention}")
+            await self.log_action(guild, moderator, "Context Clear", target=member, reason="Cleared notes")
         else:
+            await self.reply(source, "❌ Invalid action (use add/list/clear).")
+
+    # Staff management (admins only)
+    async def do_staff(self, source, guild, moderator_member: discord.Member, action: str, target: Optional[discord.Member]):
+        if not moderator_member.guild_permissions.administrator:
+            return await self.reply(source, "⛔ Only administrators can manage staff.")
+        if action == "add":
+            if not target:
+                return await self.reply(source, "❌ You must specify a user to add.")
+            await self.redis.sadd(self.staff_key, str(target.id))
+            await self.reply(source, f"✅ {target.mention} added to staff list.")
+            await self.log_action(guild, moderator_member, "Staff Add", target=target, reason="Added to internal staff list")
+        elif action == "remove":
+            if not target:
+                return await self.reply(source, "❌ You must specify a user to remove.")
+            await self.redis.srem(self.staff_key, str(target.id))
+            await self.reply(source, f"✅ {target.mention} removed from staff list.")
+            await self.log_action(guild, moderator_member, "Staff Remove", target=target, reason="Removed from internal staff list")
+        elif action == "list":
             staff_ids = await self.redis.smembers(self.staff_key)
             if not staff_ids:
-                await interaction.response.send_message("📭 No staff members registered.", ephemeral=True)
-                await self.log_action(interaction.guild, interaction.user, "Staff List", reason="No staff in list")
+                await self.reply(source, "📭 No staff members registered.")
+                await self.log_action(guild, moderator_member, "Staff List", reason="No staff in list")
                 return
             mentions = []
             for uid in staff_ids:
-                m = interaction.guild.get_member(int(uid))
+                m = guild.get_member(int(uid))
                 mentions.append(m.mention if m else f"<@{uid}>")
-            await interaction.response.send_message(f"👥 Staff list ({len(mentions)}):\n" + ", ".join(mentions), ephemeral=True)
-            await self.log_action(interaction.guild, interaction.user, "Staff List", reason=f"Listed {len(mentions)} staff members")
+            await self.reply(source, f"👥 Staff list ({len(mentions)}):\n" + ", ".join(mentions))
+            await self.log_action(guild, moderator_member, "Staff List", reason=f"Listed {len(mentions)} staff members")
+        else:
+            await self.reply(source, "❌ Invalid action (use add/remove/list).")
 
-    # --------- Case retrieval ---------
-    @app_commands.command(name="case", description="Retrieve details of a specific moderation case")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def case(self, interaction: discord.Interaction, case_id: int):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # Case retrieval
+    async def do_case(self, source, guild, moderator, case_id: int):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         data = await self.redis.get(f"moderation:case:{case_id}")
         if not data:
-            return await interaction.response.send_message(f"❌ Case ID #{case_id} not found.", ephemeral=True)
-
+            return await self.reply(source, f"❌ Case ID #{case_id} not found.")
         case = json.loads(data)
-        guild = interaction.guild
-
-        moderator = guild.get_member(case["moderator_id"])
-        target = guild.get_member(case["target_id"]) if case["target_id"] else None
-
+        mod = guild.get_member(case["moderator_id"])
+        tgt = guild.get_member(case["target_id"]) if case["target_id"] else None
         try:
             ts = datetime.fromisoformat(case["timestamp"])
         except Exception:
             ts = datetime.now(timezone.utc)
-
         color = discord.Color(case["color"])
-
         embed = discord.Embed(
             title="👮 Staff Action (Retrieved)",
             description=f"**{case['action']}**",
             color=color,
             timestamp=ts
         )
-        mod_val = moderator.mention if moderator else f"<@{case['moderator_id']}>"
-        tgt_val = target.mention if target else (f"<@{case['target_id']}>" if case["target_id"] else "—")
+        mod_val = mod.mention if mod else f"<@{case['moderator_id']}>"
+        tgt_val = tgt.mention if tgt else (f"<@{case['target_id']}>" if case["target_id"] else "—")
         embed.add_field(name="Moderator", value=mod_val, inline=True)
         embed.add_field(name="Target", value=tgt_val, inline=True)
         embed.add_field(name="Reason/Details", value=(case.get("reason") or "No reason provided"), inline=False)
         embed.add_field(name="Category", value=(case.get("category") or "—"), inline=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await self.log_action(interaction.guild, interaction.user, "Case Retrieve", reason=f"Retrieved Case #{case_id}")
+        # reply embed
+        if isinstance(source, discord.Interaction):
+            await source.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await source.send(embed=embed)
+        await self.log_action(guild, moderator, "Case Retrieve", reason=f"Retrieved Case #{case_id}")
 
-    # --------- Sanctions list ---------
-    @app_commands.command(name="sanctions", description="List all sanctions for a user")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def sanctions(self, interaction: discord.Interaction, member: discord.Member):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # Sanctions list
+    async def do_sanctions(self, source, guild, moderator, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         sanctions = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
         if not sanctions:
-            return await interaction.response.send_message("📭 No sanctions.", ephemeral=True)
-
+            return await self.reply(source, "📭 No sanctions.")
         lines = []
         for raw in sanctions:
             try:
@@ -627,59 +489,19 @@ class Moderation(commands.Cog):
             ts = s.get("timestamp")
             line = f"- [{ts}] {t}{f' ({cat})' if cat else ''} • {rsn}{f' • Duration: {dur}' if dur else ''} • by <@{mod}>"
             lines.append(line)
-
         text = "📒 Sanctions:\n" + "\n".join(lines[:30])
         more = f"\n… and {len(lines)-30} more." if len(lines) > 30 else ""
-        await interaction.response.send_message(text + more, ephemeral=True)
+        await self.reply(source, text + more)
 
-    # --------- User profile + Sanctions button ---------
-    class SanctionsView(discord.ui.View):
-        def __init__(self, cog: "Moderation", member_id: int, *, timeout: float = 180):
-            super().__init__(timeout=timeout)
-            self.cog = cog
-            self.member_id = member_id
-
-        @discord.ui.button(label="Sanctions", style=discord.ButtonStyle.red)
-        async def show_sanctions(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if not await self.cog.is_staff_or_admin(interaction.user):
-                return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
-            sanctions = await self.cog.redis.lrange(f"sanctions:{self.member_id}", 0, -1)
-            if not sanctions:
-                return await interaction.response.send_message("📭 No sanctions found.", ephemeral=True)
-
-            lines = []
-            for raw in sanctions:
-                try:
-                    s = json.loads(raw)
-                except Exception:
-                    continue
-                t = s.get("type", "unknown")
-                cat = s.get("category")
-                rsn = s.get("reason") or "No reason"
-                dur = s.get("duration")
-                mod = s.get("moderator")
-                ts = s.get("timestamp")
-                line = f"- [{ts}] {t}{f' ({cat})' if cat else ''} • {rsn}{f' • Duration: {dur}' if dur else ''} • by <@{mod}>"
-                lines.append(line)
-
-            text = "📒 Sanctions:\n" + "\n".join(lines[:25])
-            more = f"\n… and {len(lines)-25} more." if len(lines) > 25 else ""
-            await interaction.response.send_message(text + more, ephemeral=True)
-
-    @app_commands.command(name="user", description="Show user profile with sanctions")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def user_profile(self, interaction: discord.Interaction, member: discord.Member):
-        if not await self.is_staff_or_admin(interaction.user):
-            return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
-
+    # User profile
+    async def do_user(self, source, guild, moderator, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+            return await self.reply(source, "⛔ Unauthorized.")
         sanctions_raw = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
         sanction_count = len(sanctions_raw)
-
         joined = member.joined_at.strftime("%Y-%m-%d %H:%M UTC") if member.joined_at else "Unknown"
-        roles = [r.mention for r in member.roles if r != interaction.guild.default_role]
+        roles = [r.mention for r in member.roles if r != guild.default_role]
         roles_text = ", ".join(roles) if roles else "None"
-
         embed = discord.Embed(
             title=f"User Profile: {member.display_name}",
             color=discord.Color.blurple(),
@@ -689,7 +511,6 @@ class Moderation(commands.Cog):
         embed.add_field(name="Joined", value=joined, inline=True)
         embed.add_field(name="Roles", value=roles_text, inline=False)
         embed.add_field(name="Sanctions", value=str(sanction_count), inline=True)
-
         if sanctions_raw:
             latest_lines = []
             for raw in sanctions_raw[-3:]:
@@ -705,19 +526,183 @@ class Moderation(commands.Cog):
                 latest_lines.append(f"[{ts}] {t}{f' ({cat})' if cat else ''} • {rsn}{f' • {dur}' if dur else ''}")
             if latest_lines:
                 embed.add_field(name="Latest sanctions", value="\n".join(latest_lines), inline=False)
+        if isinstance(source, discord.Interaction):
+            await source.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await source.send(embed=embed)
+        await self.log_action(guild, moderator, "User Profile View", target=member, reason=f"Sanctions count: {sanction_count}")
 
-        view = Moderation.SanctionsView(self, member.id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    # --------- Slash commands ---------
+    @app_commands.command(name="warn-auction", description="Issue an auction warning")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def warn_auction_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        await self.do_warn_auction(interaction, interaction.guild, interaction.user, member, reason)
 
-        await self.log_action(
-            interaction.guild,
-            interaction.user,
-            "User Profile View",
-            target=member,
-            reason=f"Sanctions count: {sanction_count}"
-        )
+    @app_commands.command(name="warn-general", description="Issue a general warning")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def warn_general_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        await self.do_warn_general(interaction, interaction.guild, interaction.user, member, reason)
+
+    @app_commands.choices(category=[
+        app_commands.Choice(name="Auction", value="Auction"),
+        app_commands.Choice(name="Market", value="Market"),
+        app_commands.Choice(name="Crosstrade", value="Crosstrade"),
+        app_commands.Choice(name="Spawn", value="Spawn"),
+        app_commands.Choice(name="Pricing", value="Pricing")
+    ])
+    @app_commands.command(name="ban", description="Give a ban role to a member by category")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def ban_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str], reason: str, time: Optional[str] = None):
+        await self.do_ban_role(interaction, interaction.guild, interaction.user, member, category.value, reason, time)
+
+    @app_commands.choices(category=[
+        app_commands.Choice(name="Auction", value="Auction"),
+        app_commands.Choice(name="Market", value="Market"),
+        app_commands.Choice(name="Crosstrade", value="Crosstrade"),
+        app_commands.Choice(name="Spawn", value="Spawn"),
+        app_commands.Choice(name="Pricing", value="Pricing")
+    ])
+    @app_commands.command(name="unban", description="Remove a category ban role from a member")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def unban_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
+        await self.do_unban_role(interaction, interaction.guild, interaction.user, member, category.value)
+
+    @app_commands.command(name="all-ban", description="Ban a member from the server")
+    @app_commands.describe(reason="Reason for the ban", time="Optional duration (e.g. '2 days')")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def all_ban_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: Optional[str] = None):
+        await self.do_all_ban(interaction, interaction.guild, interaction.user, member, reason, time)
+
+    @app_commands.command(name="all-unban", description="Unban a user from the server")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def all_unban_slash(self, interaction: discord.Interaction, user_id: int):
+        await self.do_all_unban(interaction, interaction.guild, interaction.user, user_id)
+
+    @app_commands.command(name="timeout", description="Timeout a member")
+    @app_commands.describe(reason="Reason for the timeout", time="Duration in minutes")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def timeout_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: int):
+        await self.do_timeout(interaction, interaction.guild, interaction.user, member, reason, time)
+
+    @app_commands.command(name="warnings", description="Check a user's warnings")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def warnings_slash(self, interaction: discord.Interaction, member: discord.Member):
+        await self.do_warnings(interaction, interaction.guild, interaction.user, member)
+
+    @app_commands.choices(category=[
+        app_commands.Choice(name="auction", value="auction"),
+        app_commands.Choice(name="general", value="general"),
+    ])
+    @app_commands.command(name="clear-warnings", description="Clear a user's warnings")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def clear_warnings_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
+        await self.do_clear_warnings(interaction, interaction.guild, interaction.user, member, category.value)
+
+    @app_commands.choices(action=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="list", value="list"),
+        app_commands.Choice(name="clear", value="clear"),
+    ])
+    @app_commands.command(name="context", description="Add, list, or clear context notes for a user")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def context_slash(self, interaction: discord.Interaction, member: discord.Member, action: app_commands.Choice[str], note: Optional[str] = None):
+        await self.do_context(interaction, interaction.guild, interaction.user, member, action.value, note)
+
+    @app_commands.choices(action=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="remove", value="remove"),
+        app_commands.Choice(name="list", value="list"),
+    ])
+    @app_commands.command(name="staff", description="Manage staff list (admins only)")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def staff_slash(self, interaction: discord.Interaction, action: app_commands.Choice[str], member: Optional[discord.Member] = None):
+        await self.do_staff(interaction, interaction.guild, interaction.user, action.value, member)
+
+    @app_commands.command(name="case", description="Retrieve details of a specific moderation case")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def case_slash(self, interaction: discord.Interaction, case_id: int):
+        await self.do_case(interaction, interaction.guild, interaction.user, case_id)
+
+    @app_commands.command(name="sanctions", description="List all sanctions for a user")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def sanctions_slash(self, interaction: discord.Interaction, member: discord.Member):
+        await self.do_sanctions(interaction, interaction.guild, interaction.user, member)
+
+    @app_commands.command(name="user", description="Show user profile with sanctions")
+    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    async def user_slash(self, interaction: discord.Interaction, member: discord.Member):
+        await self.do_user(interaction, interaction.guild, interaction.user, member)
+
+    # --------- Prefix commands (mirror) ---------
+    @commands.command(name="warn-auction")
+    async def warn_auction_prefix(self, ctx: commands.Context, member: discord.Member, *, reason: str):
+        await self.do_warn_auction(ctx, ctx.guild, ctx.author, member, reason)
+
+    @commands.command(name="warn-general")
+    async def warn_general_prefix(self, ctx: commands.Context, member: discord.Member, *, reason: str):
+        await self.do_warn_general(ctx, ctx.guild, ctx.author, member, reason)
+
+    @commands.command(name="ban")
+    async def ban_prefix(self, ctx: commands.Context, member: discord.Member, category: str, *, reason: str):
+        # Optional duration: use "time:<value>" at end of reason, e.g., "spam time:1h"
+        time = None
+        if " time:" in reason:
+            reason, time = reason.split(" time:", 1)
+            reason = reason.strip()
+            time = time.strip()
+        await self.do_ban_role(ctx, ctx.guild, ctx.author, member, category, reason, time)
+
+    @commands.command(name="unban")
+    async def unban_prefix(self, ctx: commands.Context, member: discord.Member, category: str):
+        await self.do_unban_role(ctx, ctx.guild, ctx.author, member, category)
+
+    @commands.command(name="all-ban")
+    async def all_ban_prefix(self, ctx: commands.Context, member: discord.Member, *, reason: str):
+        # Optional duration: "time:<value>" at end
+        time = None
+        if " time:" in reason:
+            reason, time = reason.split(" time:", 1)
+            reason = reason.strip()
+            time = time.strip()
+        await self.do_all_ban(ctx, ctx.guild, ctx.author, member, reason, time)
+
+    @commands.command(name="all-unban")
+    async def all_unban_prefix(self, ctx: commands.Context, user_id: int):
+        await self.do_all_unban(ctx, ctx.guild, ctx.author, user_id)
+
+    @commands.command(name="timeout")
+    async def timeout_prefix(self, ctx: commands.Context, member: discord.Member, minutes: int, *, reason: str):
+        await self.do_timeout(ctx, ctx.guild, ctx.author, member, reason, minutes)
+
+    @commands.command(name="warnings")
+    async def warnings_prefix(self, ctx: commands.Context, member: discord.Member):
+        await self.do_warnings(ctx, ctx.guild, ctx.author, member)
+
+    @commands.command(name="clear-warnings")
+    async def clear_warnings_prefix(self, ctx: commands.Context, member: discord.Member, category: str):
+        await self.do_clear_warnings(ctx, ctx.guild, ctx.author, member, category.lower())
+
+    @commands.command(name="context")
+    async def context_prefix(self, ctx: commands.Context, member: discord.Member, action: str, *, note: Optional[str] = None):
+        await self.do_context(ctx, ctx.guild, ctx.author, member, action.lower(), note)
+
+    @commands.command(name="staff")
+    async def staff_prefix(self, ctx: commands.Context, action: str, member: Optional[discord.Member] = None):
+        await self.do_staff(ctx, ctx.guild, ctx.author, action.lower(), member)
+
+    @commands.command(name="case")
+    async def case_prefix(self, ctx: commands.Context, case_id: int):
+        await self.do_case(ctx, ctx.guild, ctx.author, case_id)
+
+    @commands.command(name="sanctions")
+    async def sanctions_prefix(self, ctx: commands.Context, member: discord.Member):
+        await self.do_sanctions(ctx, ctx.guild, ctx.author, member)
+
+    @commands.command(name="user")
+    async def user_prefix(self, ctx: commands.Context, member: discord.Member):
+        await self.do_user(ctx, ctx.guild, ctx.author, member)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
-    log.info("⚙️ Moderation cog loaded")
+    log.info("⚙️ Moderation cog loaded (slash + prefix)")
