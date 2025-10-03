@@ -13,7 +13,7 @@ import redis.asyncio as redis
 log = logging.getLogger("cog-moderation")
 
 # --------- Config via environment ---------
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) or None
 REDIS_URL = os.getenv("REDIS_URL")
 
@@ -27,29 +27,20 @@ CATEGORY_ROLES = {
     "Spawn": int(os.getenv("ROLE_SPAWN", "0")) or None,
 }
 
-# --------- Utils ---------
+# --------- Utilities ---------
 def parse_duration_to_timedelta(duration: Optional[str]) -> Optional[timedelta]:
     if not duration:
         return None
     s = duration.strip().lower()
     try:
-        # minutes
-        if s.endswith(("minutes", "minute", "mins", "min")) or "min" in s:
-            n = int(s.split()[0]) if " " in s else int(
-                s.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", "")
-            )
+        if s.endswith(("m", "min", "mins", "minute", "minutes")):
+            n = int("".join([c for c in s if c.isdigit()]))
             return timedelta(minutes=n)
-        # hours
-        if s.endswith(("hours", "hour", "h")) or s.endswith("h"):
-            n = int(s.split()[0]) if " " in s else int(
-                s.replace("h", "").replace("hours", "").replace("hour", "")
-            )
+        if s.endswith(("h", "hour", "hours")):
+            n = int("".join([c for c in s if c.isdigit()]))
             return timedelta(hours=n)
-        # days
-        if s.endswith(("days", "day", "d")) or s.endswith("d"):
-            n = int(s.split()[0]) if " " in s else int(
-                s.replace("d", "").replace("days", "").replace("day", "")
-            )
+        if s.endswith(("d", "day", "days")):
+            n = int("".join([c for c in s if c.isdigit()]))
             return timedelta(days=n)
     except Exception:
         return None
@@ -65,11 +56,10 @@ class Moderation(commands.Cog):
         self.check_expired.start()
 
     async def cog_load(self):
-        # Réutilise Redis du bot si disponible, sinon crée la connexion
         self.redis = getattr(self.bot, "redis", None)
         if not self.redis and REDIS_URL:
             self.redis = redis.from_url(REDIS_URL, decode_responses=True)
-        log.info("Moderation cog ready (Redis=%s)", "shared" if getattr(self.bot, "redis", None) else "own")
+        log.info("Moderation cog ready")
 
     async def cog_unload(self):
         self.check_expired.cancel()
@@ -115,28 +105,24 @@ class Moderation(commands.Cog):
                     if start and now >= (start + td):
                         stype = s.get("type")
 
-                        # --- Expiration ban par rôle ---
+                        # Expiration of category role ban
                         if stype == "ban-role" and member:
-                            cat = s.get("category")
-                            role_id = CATEGORY_ROLES.get(cat)
-                            role = guild.get_role(role_id) if role_id else None
+                            role_id = s.get("role_id")
+                            role = guild.get_role(int(role_id)) if role_id else None
                             if role and role in member.roles:
                                 try:
                                     await member.remove_roles(role, reason="Ban expired")
                                 except discord.Forbidden:
                                     pass
 
-                        # --- Expiration timeout ---
+                        # Timeout auto-expires by Discord
                         elif stype == "timeout":
-                            # Discord retire déjà le timeout automatiquement
                             pass
 
-                        # --- Expiration all-ban (ban serveur) ---
+                        # Expiration of server tempban (auto-unban + log)
                         elif stype == "all-ban":
                             try:
                                 await guild.unban(discord.Object(id=member_id), reason="Tempban expired")
-
-                                # LOG auto-unban
                                 if LOG_CHANNEL_ID:
                                     log_channel = guild.get_channel(LOG_CHANNEL_ID)
                                     if log_channel:
@@ -151,24 +137,62 @@ class Moderation(commands.Cog):
                             except (discord.NotFound, discord.Forbidden):
                                 pass
 
-                        # Sanction expirée → on ne la garde pas
+                        # Do not keep expired sanction
                         continue
 
-                # Pas expirée → on la garde
+                # Still active, keep it
                 keep.append(raw)
 
-            # Réécrit la liste
             await self.redis.delete(key)
             if keep:
                 await self.redis.rpush(key, *keep)
 
-    # --------- Access control ---------
+    # --------- Persistent roles on rejoin ---------
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if not self.redis:
+            return
+        sanctions = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
+        if not sanctions:
+            return
+
+        guild = member.guild
+        for raw in sanctions:
+            try:
+                s = json.loads(raw)
+            except Exception:
+                continue
+
+            # Only ban-role sanctions need reapplication
+            if s.get("type") == "ban-role":
+                role_id = s.get("role_id")
+                if role_id:
+                    role = guild.get_role(int(role_id))
+                    if role and role not in member.roles:
+                        try:
+                            await member.add_roles(role, reason="Persistent sanction reapplied")
+                            log.info("♻️ Reapplied persistent role %s to %s", role.name, member)
+                        except discord.Forbidden:
+                            log.warning("❌ Missing permissions to reapply role %s", role_id)
+
+    # --------- Helpers ---------
     async def is_staff_or_admin(self, member: discord.Member) -> bool:
         if member.guild_permissions.administrator:
             return True
         return await self.redis.sismember(self.staff_key, str(member.id))
 
-    # --------- Logging ---------
+    async def send_dm_safe(self, member: discord.Member, text: str):
+        try:
+            await member.send(text)
+        except discord.Forbidden:
+            pass
+
+    async def reply(self, ctx_or_inter, text: str, *, ephemeral: bool = True, view: Optional[discord.ui.View] = None, embed: Optional[discord.Embed] = None):
+        if isinstance(ctx_or_inter, discord.Interaction):
+            await ctx_or_inter.response.send_message(content=text if not embed else None, ephemeral=ephemeral, view=view, embed=embed)
+        else:
+            await ctx_or_inter.send(content=text if not embed else None, view=view, embed=embed)
+
     async def log_action(
         self,
         guild: discord.Guild,
@@ -205,22 +229,9 @@ class Moderation(commands.Cog):
             "timestamp": datetime.now(timezone.utc).isoformat()
         }))
 
-    # --------- Core logic helpers (used by slash + prefix) ---------
-    async def send_dm_safe(self, member: discord.Member, text: str):
-        try:
-            await member.send(text)
-        except discord.Forbidden:
-            pass
-
-    async def reply(self, ctx_or_inter, text: str, *, ephemeral: bool = True):
-        if isinstance(ctx_or_inter, discord.Interaction):
-            await ctx_or_inter.response.send_message(text, ephemeral=ephemeral)
-        else:
-            await ctx_or_inter.send(text)
-
-    # Warn auction
-    async def do_warn_auction(self, source, guild, moderator, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    # --------- Core logic (used by slash + prefix) ---------
+    async def do_warn_auction(self, source, guild, moderator: discord.Member, member: discord.Member, reason: str):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         key = f"warns:auction:{member.id}"
         count = await self.redis.incr(key)
@@ -236,9 +247,8 @@ class Moderation(commands.Cog):
         await self.log_action(guild, moderator, "Warn (Auction)", target=member, reason=f"{reason} • Count {count}", category="auction")
         await self.reply(source, f"⚠️ Auction warning issued to {member.mention} ({count}/{AUCTION_CAP})")
 
-    # Warn general
-    async def do_warn_general(self, source, guild, moderator, member: discord.Member, reason: str):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_warn_general(self, source, guild, moderator: discord.Member, member: discord.Member, reason: str):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         key = f"warns:general:{member.id}"
         count = await self.redis.incr(key)
@@ -254,9 +264,8 @@ class Moderation(commands.Cog):
         await self.log_action(guild, moderator, "Warn (General)", target=member, reason=f"{reason} • Count {count}", category="general")
         await self.reply(source, f"⚠️ General warning issued to {member.mention} (now at {count})")
 
-    # Ban role
-    async def do_ban_role(self, source, guild, moderator, member: discord.Member, category: str, reason: str, time: Optional[str]):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_ban_role(self, source, guild, moderator: discord.Member, member: discord.Member, category: str, reason: str, time: Optional[str]):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         role_id = CATEGORY_ROLES.get(category)
         role = guild.get_role(role_id) if role_id else None
@@ -269,6 +278,7 @@ class Moderation(commands.Cog):
         sanction = {
             "type": "ban-role",
             "category": category,
+            "role_id": role.id if role else None,
             "reason": reason,
             "moderator": moderator.id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -277,11 +287,10 @@ class Moderation(commands.Cog):
         await self.redis.rpush(f"sanctions:{member.id}", json.dumps(sanction))
         await self.send_dm_safe(member, f"🔨 Banned from {category} in {guild.name}\nReason: {reason}\nDuration: {time or 'Permanent'}")
         await self.log_action(guild, moderator, f"Ban Role ({category})", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
-        await self.reply(source, f"🔨 {member.mention} has been given the **{category}** ban role.\nReason: {reason}")
+        await self.reply(source, f"🔨 {member.mention} banned from {category}.\nReason: {reason}")
 
-    # Unban role
-    async def do_unban_role(self, source, guild, moderator, member: discord.Member, category: str):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_unban_role(self, source, guild, moderator: discord.Member, member: discord.Member, category: str):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         role_id = CATEGORY_ROLES.get(category)
         role = guild.get_role(role_id) if role_id else None
@@ -295,9 +304,8 @@ class Moderation(commands.Cog):
         else:
             await self.reply(source, "❌ Role not found or not applied.")
 
-    # All-ban server
-    async def do_all_ban(self, source, guild, moderator, member: discord.Member, reason: str, time: Optional[str]):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_all_ban(self, source, guild, moderator: discord.Member, member: discord.Member, reason: str, time: Optional[str]):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         await self.send_dm_safe(member, f"🚫 Banned from {guild.name}\nReason: {reason}\nDuration: {time or 'Permanent'}")
         try:
@@ -315,9 +323,8 @@ class Moderation(commands.Cog):
         await self.log_action(guild, moderator, "All-Ban", target=member, reason=f"{reason} • Duration: {time or 'Permanent'}", category="ban")
         await self.reply(source, f"🚫 {member.mention} has been banned from the server.\nReason: {reason}")
 
-    # All-unban server
-    async def do_all_unban(self, source, guild, moderator, user_id: int):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_all_unban(self, source, guild, moderator: discord.Member, user_id: int):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         obj = discord.Object(id=user_id)
         try:
@@ -329,9 +336,8 @@ class Moderation(commands.Cog):
         await self.log_action(guild, moderator, "All-Unban", category="ban")
         await self.reply(source, f"✅ User <@{user_id}> has been unbanned from the server.")
 
-    # Timeout
-    async def do_timeout(self, source, guild, moderator, member: discord.Member, reason: str, minutes: int):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_timeout(self, source, guild, moderator: discord.Member, member: discord.Member, reason: str, minutes: int):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         try:
@@ -350,9 +356,8 @@ class Moderation(commands.Cog):
         await self.log_action(guild, moderator, "Timeout", target=member, reason=f"{reason} • Duration: {minutes} minutes", category="timeout")
         await self.reply(source, f"⏳ {member.mention} timed out for {minutes} minutes.\nReason: {reason}")
 
-    # Warnings view
-    async def do_warnings(self, source, guild, moderator, member: discord.Member):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_warnings(self, source, guild, moderator: discord.Member, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         auction = int(await self.redis.get(f"warns:auction:{member.id}") or 0)
         general = int(await self.redis.get(f"warns:general:{member.id}") or 0)
@@ -360,9 +365,8 @@ class Moderation(commands.Cog):
         await self.reply(source, text)
         await self.log_action(guild, moderator, "Warnings View", target=member, reason=f"Auction={auction}, General={general}")
 
-    # Clear warnings
-    async def do_clear_warnings(self, source, guild, moderator, member: discord.Member, category_key: str):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_clear_warnings(self, source, guild, moderator: discord.Member, member: discord.Member, category_key: str):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         if category_key == "auction":
             await self.redis.delete(f"warns:auction:{member.id}")
@@ -371,9 +375,8 @@ class Moderation(commands.Cog):
         await self.reply(source, f"✅ Cleared {category_key} warnings for {member.mention}")
         await self.log_action(guild, moderator, f"Clear Warnings ({category_key})", target=member)
 
-    # Context notes
-    async def do_context(self, source, guild, moderator, member: discord.Member, action: str, note: Optional[str]):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_context(self, source, guild, moderator: discord.Member, member: discord.Member, action: str, note: Optional[str]):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         key = f"context:{member.id}"
         if action == "add":
@@ -382,7 +385,7 @@ class Moderation(commands.Cog):
             if len(note) > 500:
                 return await self.reply(source, "❌ Note too long (max 500 chars).")
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            entry = f"[{timestamp}] {getattr(moderator, 'display_name', 'Staff')}: {note}"
+            entry = f"[{timestamp}] {moderator.display_name}: {note}"
             await self.redis.rpush(key, entry)
             await self.reply(source, f"📝 Added context note for {member.mention}")
             await self.log_action(guild, moderator, "Context Add", target=member, reason=entry)
@@ -403,7 +406,6 @@ class Moderation(commands.Cog):
         else:
             await self.reply(source, "❌ Invalid action (use add/list/clear).")
 
-    # Staff management (admins only)
     async def do_staff(self, source, guild, moderator_member: discord.Member, action: str, target: Optional[discord.Member]):
         if not moderator_member.guild_permissions.administrator:
             return await self.reply(source, "⛔ Only administrators can manage staff.")
@@ -434,9 +436,8 @@ class Moderation(commands.Cog):
         else:
             await self.reply(source, "❌ Invalid action (use add/remove/list).")
 
-    # Case retrieval
-    async def do_case(self, source, guild, moderator, case_id: int):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_case(self, source, guild, moderator: discord.Member, case_id: int):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         data = await self.redis.get(f"moderation:case:{case_id}")
         if not data:
@@ -461,16 +462,10 @@ class Moderation(commands.Cog):
         embed.add_field(name="Target", value=tgt_val, inline=True)
         embed.add_field(name="Reason/Details", value=(case.get("reason") or "No reason provided"), inline=False)
         embed.add_field(name="Category", value=(case.get("category") or "—"), inline=True)
-        # reply embed
-        if isinstance(source, discord.Interaction):
-            await source.response.send_message(embed=embed, ephemeral=True)
-        else:
-            await source.send(embed=embed)
-        await self.log_action(guild, moderator, "Case Retrieve", reason=f"Retrieved Case #{case_id}")
+        await self.reply(source, "", embed=embed)
 
-    # Sanctions list
-    async def do_sanctions(self, source, guild, moderator, member: discord.Member):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    async def do_sanctions(self, source, guild, moderator: discord.Member, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         sanctions = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
         if not sanctions:
@@ -493,9 +488,39 @@ class Moderation(commands.Cog):
         more = f"\n… and {len(lines)-30} more." if len(lines) > 30 else ""
         await self.reply(source, text + more)
 
-    # User profile
-    async def do_user(self, source, guild, moderator, member: discord.Member):
-        if not await self.is_staff_or_admin(moderator if isinstance(moderator, discord.Member) else guild.get_member(moderator.id)):
+    class SanctionsView(discord.ui.View):
+        def __init__(self, cog: "Moderation", member_id: int, *, timeout: float = 180):
+            super().__init__(timeout=timeout)
+            self.cog = cog
+            self.member_id = member_id
+
+        @discord.ui.button(label="Sanctions", style=discord.ButtonStyle.red)
+        async def show_sanctions(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not await self.cog.is_staff_or_admin(interaction.user):
+                return await interaction.response.send_message("⛔ Unauthorized.", ephemeral=True)
+            sanctions = await self.cog.redis.lrange(f"sanctions:{self.member_id}", 0, -1)
+            if not sanctions:
+                return await interaction.response.send_message("📭 No sanctions found.", ephemeral=True)
+            lines = []
+            for raw in sanctions:
+                try:
+                    s = json.loads(raw)
+                except Exception:
+                    continue
+                t = s.get("type", "unknown")
+                cat = s.get("category")
+                rsn = s.get("reason") or "No reason"
+                dur = s.get("duration")
+                mod = s.get("moderator")
+                ts = s.get("timestamp")
+                line = f"- [{ts}] {t}{f' ({cat})' if cat else ''} • {rsn}{f' • Duration: {dur}' if dur else ''} • by <@{mod}>"
+                lines.append(line)
+            text = "📒 Sanctions:\n" + "\n".join(lines[:25])
+            more = f"\n… and {len(lines)-25} more." if len(lines) > 25 else ""
+            await interaction.response.send_message(text + more, ephemeral=True)
+
+    async def do_user(self, source, guild, moderator: discord.Member, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator):
             return await self.reply(source, "⛔ Unauthorized.")
         sanctions_raw = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
         sanction_count = len(sanctions_raw)
@@ -526,20 +551,85 @@ class Moderation(commands.Cog):
                 latest_lines.append(f"[{ts}] {t}{f' ({cat})' if cat else ''} • {rsn}{f' • {dur}' if dur else ''}")
             if latest_lines:
                 embed.add_field(name="Latest sanctions", value="\n".join(latest_lines), inline=False)
-        if isinstance(source, discord.Interaction):
-            await source.response.send_message(embed=embed, ephemeral=True)
-        else:
-            await source.send(embed=embed)
+        view = Moderation.SanctionsView(self, member.id)
+        await self.reply(source, "", embed=embed, view=view)
         await self.log_action(guild, moderator, "User Profile View", target=member, reason=f"Sanctions count: {sanction_count}")
+
+    # --------- Modlogs pagination ---------
+    class ModlogsView(discord.ui.View):
+        def __init__(self, cog, source, guild, moderator, member, sanctions, *, timeout=180):
+            super().__init__(timeout=timeout)
+            self.cog = cog
+            self.source = source
+            self.guild = guild
+            self.moderator = moderator
+            self.member = member
+            self.sanctions = sanctions
+            self.page = 0
+            self.per_page = 15
+
+        def format_page(self):
+            start = self.page * self.per_page
+            end = start + self.per_page
+            lines = []
+            for idx, raw in enumerate(self.sanctions[start:end], start=start+1):
+                try:
+                    s = json.loads(raw)
+                except Exception:
+                    continue
+                case_id = idx
+                t = s.get("type", "unknown").capitalize()
+                rsn = s.get("reason") or "No reason"
+                mod_id = s.get("moderator")
+                mod = self.guild.get_member(mod_id)
+                mod_name = mod.display_name if mod else f"<@{mod_id}>"
+                ts = s.get("timestamp")
+                try:
+                    ts_fmt = datetime.fromisoformat(ts).strftime("%b %d %Y %H:%M")
+                except Exception:
+                    ts_fmt = ts
+                lines.append(
+                    f"Case {case_id}\nType: {t}\nUser: {self.member} ({self.member.id})\nReason: {rsn}\nModerator: {mod_name} • {ts_fmt}\n"
+                )
+            return "\n".join(lines) or "📭 No sanctions."
+
+        async def send_or_edit(self, interaction: Optional[discord.Interaction] = None):
+            text = self.format_page()
+            if interaction:
+                await interaction.response.edit_message(content=text, view=self)
+            else:
+                if isinstance(self.source, discord.Interaction):
+                    await self.source.response.send_message(text, view=self, ephemeral=True)
+                else:
+                    await self.source.send(text, view=self)
+
+        @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
+        async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.page > 0:
+                self.page -= 1
+                await self.send_or_edit(interaction)
+
+        @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
+        async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if (self.page + 1) * self.per_page < len(self.sanctions):
+                self.page += 1
+                await self.send_or_edit(interaction)
+
+    async def show_modlogs(self, source, guild, moderator: discord.Member, member: discord.Member):
+        if not await self.is_staff_or_admin(moderator):
+            return await self.reply(source, "⛔ Unauthorized.")
+        sanctions = await self.redis.lrange(f"sanctions:{member.id}", 0, -1)
+        if not sanctions:
+            return await self.reply(source, "📭 No sanctions for this user.")
+        view = Moderation.ModlogsView(self, source, guild, moderator, member, sanctions)
+        await view.send_or_edit()
 
     # --------- Slash commands ---------
     @app_commands.command(name="warn-auction", description="Issue an auction warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def warn_auction_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         await self.do_warn_auction(interaction, interaction.guild, interaction.user, member, reason)
 
     @app_commands.command(name="warn-general", description="Issue a general warning")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def warn_general_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         await self.do_warn_general(interaction, interaction.guild, interaction.user, member, reason)
 
@@ -551,7 +641,6 @@ class Moderation(commands.Cog):
         app_commands.Choice(name="Pricing", value="Pricing")
     ])
     @app_commands.command(name="ban", description="Give a ban role to a member by category")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def ban_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str], reason: str, time: Optional[str] = None):
         await self.do_ban_role(interaction, interaction.guild, interaction.user, member, category.value, reason, time)
 
@@ -563,29 +652,24 @@ class Moderation(commands.Cog):
         app_commands.Choice(name="Pricing", value="Pricing")
     ])
     @app_commands.command(name="unban", description="Remove a category ban role from a member")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def unban_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
         await self.do_unban_role(interaction, interaction.guild, interaction.user, member, category.value)
 
     @app_commands.command(name="all-ban", description="Ban a member from the server")
-    @app_commands.describe(reason="Reason for the ban", time="Optional duration (e.g. '2 days')")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+    @app_commands.describe(reason="Reason for the ban", time="Optional duration (e.g. '2d', '3h')")
     async def all_ban_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: Optional[str] = None):
         await self.do_all_ban(interaction, interaction.guild, interaction.user, member, reason, time)
 
     @app_commands.command(name="all-unban", description="Unban a user from the server")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def all_unban_slash(self, interaction: discord.Interaction, user_id: int):
         await self.do_all_unban(interaction, interaction.guild, interaction.user, user_id)
 
     @app_commands.command(name="timeout", description="Timeout a member")
     @app_commands.describe(reason="Reason for the timeout", time="Duration in minutes")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def timeout_slash(self, interaction: discord.Interaction, member: discord.Member, reason: str, time: int):
         await self.do_timeout(interaction, interaction.guild, interaction.user, member, reason, time)
 
     @app_commands.command(name="warnings", description="Check a user's warnings")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def warnings_slash(self, interaction: discord.Interaction, member: discord.Member):
         await self.do_warnings(interaction, interaction.guild, interaction.user, member)
 
@@ -594,7 +678,6 @@ class Moderation(commands.Cog):
         app_commands.Choice(name="general", value="general"),
     ])
     @app_commands.command(name="clear-warnings", description="Clear a user's warnings")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def clear_warnings_slash(self, interaction: discord.Interaction, member: discord.Member, category: app_commands.Choice[str]):
         await self.do_clear_warnings(interaction, interaction.guild, interaction.user, member, category.value)
 
@@ -604,7 +687,6 @@ class Moderation(commands.Cog):
         app_commands.Choice(name="clear", value="clear"),
     ])
     @app_commands.command(name="context", description="Add, list, or clear context notes for a user")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def context_slash(self, interaction: discord.Interaction, member: discord.Member, action: app_commands.Choice[str], note: Optional[str] = None):
         await self.do_context(interaction, interaction.guild, interaction.user, member, action.value, note)
 
@@ -614,26 +696,26 @@ class Moderation(commands.Cog):
         app_commands.Choice(name="list", value="list"),
     ])
     @app_commands.command(name="staff", description="Manage staff list (admins only)")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def staff_slash(self, interaction: discord.Interaction, action: app_commands.Choice[str], member: Optional[discord.Member] = None):
         await self.do_staff(interaction, interaction.guild, interaction.user, action.value, member)
 
     @app_commands.command(name="case", description="Retrieve details of a specific moderation case")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def case_slash(self, interaction: discord.Interaction, case_id: int):
         await self.do_case(interaction, interaction.guild, interaction.user, case_id)
 
     @app_commands.command(name="sanctions", description="List all sanctions for a user")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def sanctions_slash(self, interaction: discord.Interaction, member: discord.Member):
         await self.do_sanctions(interaction, interaction.guild, interaction.user, member)
 
     @app_commands.command(name="user", description="Show user profile with sanctions")
-    @app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
     async def user_slash(self, interaction: discord.Interaction, member: discord.Member):
         await self.do_user(interaction, interaction.guild, interaction.user, member)
 
-    # --------- Prefix commands (mirror) ---------
+    @app_commands.command(name="modlogs", description="Show full moderation history of a user")
+    async def modlogs_slash(self, interaction: discord.Interaction, member: discord.Member):
+        await self.show_modlogs(interaction, interaction.guild, interaction.user, member)
+
+    # --------- Prefix commands ---------
     @commands.command(name="warn-auction")
     async def warn_auction_prefix(self, ctx: commands.Context, member: discord.Member, *, reason: str):
         await self.do_warn_auction(ctx, ctx.guild, ctx.author, member, reason)
@@ -643,13 +725,8 @@ class Moderation(commands.Cog):
         await self.do_warn_general(ctx, ctx.guild, ctx.author, member, reason)
 
     @commands.command(name="ban")
-    async def ban_prefix(self, ctx: commands.Context, member: discord.Member, category: str, *, reason: str):
-        # Optional duration: use "time:<value>" at end of reason, e.g., "spam time:1h"
-        time = None
-        if " time:" in reason:
-            reason, time = reason.split(" time:", 1)
-            reason = reason.strip()
-            time = time.strip()
+    async def ban_prefix(self, ctx: commands.Context, member: discord.Member, category: str, time: Optional[str] = None, *, reason: str = "No reason"):
+        # Usage: m?ban @user Auction 3d spam  OR  m?ban @user Auction spam
         await self.do_ban_role(ctx, ctx.guild, ctx.author, member, category, reason, time)
 
     @commands.command(name="unban")
@@ -657,13 +734,8 @@ class Moderation(commands.Cog):
         await self.do_unban_role(ctx, ctx.guild, ctx.author, member, category)
 
     @commands.command(name="all-ban")
-    async def all_ban_prefix(self, ctx: commands.Context, member: discord.Member, *, reason: str):
-        # Optional duration: "time:<value>" at end
-        time = None
-        if " time:" in reason:
-            reason, time = reason.split(" time:", 1)
-            reason = reason.strip()
-            time = time.strip()
+    async def all_ban_prefix(self, ctx: commands.Context, member: discord.Member, time: Optional[str] = None, *, reason: str):
+        # Usage: m?all-ban @user 7d griefing  OR  m?all-ban @user griefing
         await self.do_all_ban(ctx, ctx.guild, ctx.author, member, reason, time)
 
     @commands.command(name="all-unban")
@@ -671,7 +743,12 @@ class Moderation(commands.Cog):
         await self.do_all_unban(ctx, ctx.guild, ctx.author, user_id)
 
     @commands.command(name="timeout")
-    async def timeout_prefix(self, ctx: commands.Context, member: discord.Member, minutes: int, *, reason: str):
+    async def timeout_prefix(self, ctx: commands.Context, member: discord.Member, duration: str, *, reason: str):
+        # Usage: m?timeout @user 45m spam  OR  m?timeout @user 2h toxicity
+        td = parse_duration_to_timedelta(duration)
+        if not td:
+            return await ctx.send("❌ Invalid duration format. Use 10m, 2h, 3d.")
+        minutes = int(td.total_seconds() / 60)
         await self.do_timeout(ctx, ctx.guild, ctx.author, member, reason, minutes)
 
     @commands.command(name="warnings")
@@ -702,7 +779,11 @@ class Moderation(commands.Cog):
     async def user_prefix(self, ctx: commands.Context, member: discord.Member):
         await self.do_user(ctx, ctx.guild, ctx.author, member)
 
+    @commands.command(name="modlogs")
+    async def modlogs_prefix(self, ctx: commands.Context, member: discord.Member):
+        await self.show_modlogs(ctx, ctx.guild, ctx.author, member)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Moderation(bot))
-    log.info("⚙️ Moderation cog loaded (slash + prefix)")
+    log.info("⚙️ Moderation cog loaded (slash + prefix, persistent roles, modlogs pagination, temporary durations in prefix)")
