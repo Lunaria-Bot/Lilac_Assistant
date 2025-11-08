@@ -61,16 +61,28 @@ class LeaderboardView(discord.ui.View):
                 color=discord.Color.gold()
             )
 
-        sorted_data = sorted(data.items(), key=lambda x: int(x[1]), reverse=True)[:10]
+        sorted_data = sorted(data.items(), key=lambda x: int(x[1]), reverse=True)
+        top_10 = sorted_data[:10]
         lines = []
+        user_rank = None
+
         for i, (uid, score) in enumerate(sorted_data, start=1):
-            member = guild.get_member(int(uid))
-            mention = member.mention if member else f"<@{uid}>"
-            lines.append(f"**{i}.** {mention} — {score} claims")
+            if str(user.id) == uid:
+                user_rank = i
+            if i <= 10:
+                member = guild.get_member(int(uid))
+                mention = member.mention if member else f"<@{uid}>"
+                lines.append(f"**{i}.** {mention} — {score} claims")
+
+        user_score = int(data.get(str(user.id), 0))
+        if user_rank and user_rank <= 10:
+            user_line = f"\n\n🎉 {user.mention} is ranked **#{user_rank}** with **{user_score}** claims!"
+        else:
+            user_line = f"\n\n{user.mention} has **{user_score}** claims in **{category.title()}**."
 
         embed = discord.Embed(
             title=f"🏆 {category.title()} Leaderboard",
-            description="\n".join(lines) if lines else "No entries yet.",
+            description="\n".join(lines) + user_line,
             color=discord.Color.gold()
         )
         embed.set_footer(text=f"Requested by {user.display_name}")
@@ -90,7 +102,6 @@ class Leaderboard(commands.Cog):
         }
         log.info("⚙️ Leaderboard cog loaded with GUILD_ID=%s, MAZOKU_BOT_ID=%s", GUILD_ID, MAZOKU_BOT_ID)
 
-    # --- Main command ---
     @app_commands.command(name="leaderboard", description="View the leaderboard")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @app_commands.checks.cooldown(1, 120.0, key=lambda i: (i.user.id))
@@ -107,7 +118,6 @@ class Leaderboard(commands.Cog):
                 f"⏳ You must wait {int(error.retry_after)}s before using `/leaderboard` again.",
                 ephemeral=True
             )
-
     # --- Admin commands ---
     @app_commands.command(name="leaderboard-reset", description="Reset scores (admin)")
     @app_commands.choices(
@@ -226,11 +236,7 @@ class Leaderboard(commands.Cog):
             f"- **activity:summon** size: {sizes['activity:summon']}",
         ]
 
-        if scope.value == "summary":
-            msg = "🛠️ Debug (summary):\n" + "\n".join(lines)
-        else:
-            msg = "🛠️ Debug (full detail):\n" + "\n".join(lines)
-
+        msg = "🛠️ Debug:\n" + "\n".join(lines)
         await interaction.followup.send(msg, ephemeral=True)
 
     @leaderboard_debug.error
@@ -256,7 +262,6 @@ class Leaderboard(commands.Cog):
         embed = after.embeds[0]
         title = (embed.title or "").lower()
         if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
-            # Find the mentioned user in the description
             match = re.search(r"<@!?(\d+)>", embed.description or "")
             if not match:
                 return
@@ -267,14 +272,12 @@ class Leaderboard(commands.Cog):
             if not getattr(self.bot, "redis", None):
                 return
 
-            # Prevent double count per message
             claim_key = f"claim:{after.id}:{user_id}"
             already = await self.bot.redis.get(claim_key)
             if already:
                 return
             await self.bot.redis.set(claim_key, "1", ex=86400)
 
-            # Counters
             if not self.paused["monthly"]:
                 await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
                 await self.bot.redis.incr("activity:monthly:total")
