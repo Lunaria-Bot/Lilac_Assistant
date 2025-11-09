@@ -5,20 +5,12 @@ import logging
 import discord
 from discord.ext import commands, tasks
 
-log = logging.getLogger("cog-forward-rare")
+log = logging.getLogger("cog-message-forwarder")
 
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 FORWARD_CHANNEL_ID = int(os.getenv("FORWARD_CHANNEL_ID", "0"))
 
-RARITY_IDS = {
-    "SSR": "1342202212948115510",
-    "UR": "1342202203515125801",
-    "SR": "1342202597389373530",
-    "Rare": "1342202219574857788",
-    "Common": "1342202221558763571",
-}
-
-class ForwardRare(commands.Cog):
+class MessageForwarder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.forwarded = {}
@@ -52,27 +44,55 @@ class ForwardRare(commands.Cog):
         desc = (embed.description or "")
         title = (embed.title or "").lower()
 
-        if "auto summon" not in title:
+        # --- Vérifie le titre ---
+        valid_titles = [
+            "summon claimed",
+            "autosummon claimed",
+            "premium pack opened",
+            "mazoku event opened"
+        ]
+        if not any(t in title for t in valid_titles):
             return
 
-        forward = False
+        # --- Vérifie les emojis ---
+        emoji_ids = {
+            "SSR": "1342202212948115510",
+            "UR": "1342202203515125801",
+            "SR": "1342202597389373530",
+            "Common": "1342202221558763571",
+            "Rare": "1342202219574857788",
+        }
 
-        # Match v1 à v10
         v_match = re.search(r"\bv(10|[1-9])\b", desc, re.IGNORECASE)
 
-        if RARITY_IDS["SSR"] in desc or RARITY_IDS["UR"] in desc:
-            forward = True
-        elif RARITY_IDS["SR"] in desc and v_match:
-            forward = True
-        elif (RARITY_IDS["Common"] in desc or RARITY_IDS["Rare"] in desc) and v_match:
-            forward = True
+        should_forward = False
+        if emoji_ids["SSR"] in desc or emoji_ids["UR"] in desc:
+            should_forward = True
+        elif emoji_ids["SR"] in desc and v_match:
+            should_forward = True
+        elif (emoji_ids["Common"] in desc or emoji_ids["Rare"] in desc) and v_match:
+            should_forward = True
 
-        if forward:
-            self.forwarded[after.id] = time.time()
-            channel = after.guild.get_channel(FORWARD_CHANNEL_ID)
-            if channel:
-                await channel.send(f"🔔 **High value spawn detected!**\n[Jump to message]({after.jump_url})")
+        if not should_forward:
+            return
 
+        # --- Forward le message tel quel ---
+        self.forwarded[after.id] = time.time()
+        channel = after.guild.get_channel(FORWARD_CHANNEL_ID)
+        if not channel:
+            return
+
+        files = []
+        for attachment in after.attachments:
+            try:
+                files.append(await attachment.to_file())
+            except Exception:
+                pass
+
+        await channel.send(content=after.content, embeds=after.embeds, files=files)
+        log.info("📤 Message forwarded from #%s", after.channel.name)
+
+# --- Extension setup ---
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ForwardRare(bot))
-    log.info("⚙️ ForwardRare cog loaded")
+    await bot.add_cog(MessageForwarder(bot))
+    log.info("⚙️ MessageForwarder cog loaded")
