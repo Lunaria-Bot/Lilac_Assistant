@@ -2,7 +2,7 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 log = logging.getLogger("cog-auction-manager")
@@ -26,6 +26,7 @@ ALLOWED_ROLE_IDS = {
     1304102244462886982,
 }
 
+ACTIVE_TAG_ID = 1395407621544087583
 ACCEPT_KEYWORDS = {"accept", "accepted", "accepté", "accepter", "ok", "confirm"}
 
 class JumpButton(discord.ui.View):
@@ -37,17 +38,16 @@ class AuctionManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="auction-end", description="Lock all auction threads from yesterday and remove active tags")
+    @app_commands.command(name="auction-end", description="Lock all auction threads older than 20h and remove active tag")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_end(self, interaction: discord.Interaction):
-        # Vérifie les rôles autorisés
         if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
             await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        yesterday = datetime.utcnow() - timedelta(days=1)
+        cutoff = datetime.utcnow() - timedelta(hours=20)
 
         locked = 0
         for name, forum_id in FORUM_IDS.items():
@@ -56,21 +56,18 @@ class AuctionManager(commands.Cog):
                 continue
 
             for thread in forum.threads:
-                if thread.locked:
-                    continue
-                if thread.created_at.date() != yesterday.date():
+                if thread.locked or thread.created_at > cutoff:
                     continue
 
-                # Remove "active" tag if present
-                active_tag = discord.utils.find(lambda t: t.name.lower() == "active", forum.available_tags)
+                active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
                 if active_tag and active_tag in thread.applied_tags:
-                    new_tags = [t for t in thread.applied_tags if t != active_tag]
+                    new_tags = [t for t in thread.applied_tags if t.id != ACTIVE_TAG_ID]
                     await thread.edit(applied_tags=new_tags)
 
                 await thread.edit(locked=True)
                 locked += 1
 
-        await interaction.followup.send(f"🔒 Locked {locked} auction threads from yesterday.", ephemeral=True)
+        await interaction.followup.send(f"🔒 Locked {locked} auction threads older than 20h.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -83,37 +80,31 @@ class AuctionManager(commands.Cog):
         if message.channel.parent_id not in FORUM_IDS.values():
             return
 
-        # Format du timestamp
-        timestamp = message.created_at.strftime("%-m/%-d/%Y %-I:%M %p") if os.name != "nt" else message.created_at.strftime("%m/%d/%Y %I:%M %p")
-
-        # Auteur du thread (fallback si fetch échoue)
-        try:
-            thread_owner_msg = await message.channel.fetch_message(message.channel.id)
-            author_id = thread_owner_msg.author.id
-            author_tag = thread_owner_msg.author.mention
-        except Exception:
-            author_id = message.channel.owner_id or 0
-            author_tag = f"<@{author_id}>"
-
-        thread_title = message.channel.name
+        user = message.author
+        avatar_url = user.display_avatar.url
+        user_id = user.id
+        thread_name = message.channel.name
         content = message.content.strip() or "*No content*"
 
+        utc_minus_2 = timezone(timedelta(hours=-2))
+        local_time = message.created_at.astimezone(utc_minus_2)
+        timestamp_str = local_time.strftime("%d/%m/%Y %H:%M")
+
         embed = discord.Embed(
-            description=(
-                f"💬 {message.author.display_name} {timestamp}\n"
-                f"{content}\n"
-                f"🔮 {thread_title}\n"
-                f"Message: {message.id} | Author: {author_id} ({author_tag})"
-            ),
-            color=discord.Color.blurple()
+            title=f"📨 Bid in {thread_name}",
+            description=content,
+            color=discord.Color.gold(),
+            timestamp=message.created_at
         )
+        embed.set_author(name=f"{user.display_name} ({user_id})", icon_url=avatar_url)
+        embed.add_field(name="🕒 Time (UTC−2)", value=timestamp_str, inline=True)
+        embed.set_footer(text=f"Thread: {thread_name}")
 
         view = JumpButton(url=message.jump_url)
         forward_channel = message.guild.get_channel(BID_FORWARD_CHANNEL_ID)
         if forward_channel:
             await forward_channel.send(embed=embed, view=view)
 
-        # Check for acceptance
         lowered = message.content.lower()
         if any(word in lowered for word in ACCEPT_KEYWORDS):
             if not message.channel.locked:
