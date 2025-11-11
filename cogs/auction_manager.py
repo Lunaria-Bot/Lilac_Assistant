@@ -46,7 +46,7 @@ class AuctionManager(commands.Cog):
             self._thread_locks[thread_id] = asyncio.Lock()
         return self._thread_locks[thread_id]
 
-    @app_commands.command(name="auction-end", description="Lock all auction threads older than 20h and remove active tag")
+    @app_commands.command(name="auction-end", description="Lock threads older than 20h with active tag")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_end(self, interaction: discord.Interaction):
         if not any(role.id in ALLOWED_ROLE_IDS for role in interaction.user.roles):
@@ -55,27 +55,28 @@ class AuctionManager(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        cutoff = datetime.utcnow() - timedelta(hours=20)
-
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=20)
         locked = 0
+
         for name, forum_id in FORUM_IDS.items():
             forum = guild.get_channel(forum_id)
             if not isinstance(forum, discord.ForumChannel):
                 continue
 
             for thread in forum.threads:
-                if thread.locked or thread.created_at > cutoff:
+                if thread.locked or thread.created_at is None:
                     continue
 
-                active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
-                if active_tag and active_tag in thread.applied_tags:
+                has_active_tag = any(t.id == ACTIVE_TAG_ID for t in thread.applied_tags)
+                if not has_active_tag:
+                    continue
+
+                if thread.created_at < cutoff:
                     new_tags = [t for t in thread.applied_tags if t.id != ACTIVE_TAG_ID]
-                    await thread.edit(applied_tags=new_tags)
+                    await thread.edit(applied_tags=new_tags, locked=True)
+                    locked += 1
 
-                await thread.edit(locked=True)
-                locked += 1
-
-        await interaction.followup.send(f"🔒 Locked {locked} auction threads older than 20h.", ephemeral=True)
+        await interaction.followup.send(f"🔒 Locked {locked} threads with active tag older than 20h.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
