@@ -3,6 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
+import asyncio
 import logging
 
 log = logging.getLogger("cog-auction-manager")
@@ -38,6 +39,12 @@ class AuctionManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.accepted_threads = set()
+        self._thread_locks = {}
+
+    def get_thread_lock(self, thread_id: int) -> asyncio.Lock:
+        if thread_id not in self._thread_locks:
+            self._thread_locks[thread_id] = asyncio.Lock()
+        return self._thread_locks[thread_id]
 
     @app_commands.command(name="auction-end", description="Lock all auction threads older than 20h and remove active tag")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -111,18 +118,23 @@ class AuctionManager(commands.Cog):
             if message.channel.locked or message.channel.id in self.accepted_threads:
                 return
 
-            forum = message.guild.get_channel(message.channel.parent_id)
-            active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
-            if active_tag and active_tag in message.channel.applied_tags:
-                new_tags = [t for t in message.channel.applied_tags if t.id != ACTIVE_TAG_ID]
-                await message.channel.edit(applied_tags=new_tags)
+            lock = self.get_thread_lock(message.channel.id)
+            async with lock:
+                if message.channel.locked or message.channel.id in self.accepted_threads:
+                    return
 
-            await message.channel.send(
-                "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
-            )
-            await message.channel.edit(locked=True)
-            self.accepted_threads.add(message.channel.id)
-            log.info("🔒 Auction thread accepted and locked: %s", message.channel.name)
+                forum = message.guild.get_channel(message.channel.parent_id)
+                active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
+                if active_tag and active_tag in message.channel.applied_tags:
+                    new_tags = [t for t in message.channel.applied_tags if t.id != ACTIVE_TAG_ID]
+                    await message.channel.edit(applied_tags=new_tags)
+
+                await message.channel.send(
+                    "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
+                )
+                await message.channel.edit(locked=True)
+                self.accepted_threads.add(message.channel.id)
+                log.info("🔒 Auction thread accepted and locked: %s", message.channel.name)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
