@@ -54,6 +54,10 @@ class MessageForwarder(commands.Cog):
         if after.guild.id != GUILD_ID:
             return
         if after.id in self.forwarded:
+            log.debug("⏭ Message %s already forwarded, skipping", after.id)
+            return
+        if before.content == after.content and before.embeds == after.embeds:
+            log.debug("⏭ Message %s unchanged, skipping", after.id)
             return
 
         embed = after.embeds[0]
@@ -71,22 +75,19 @@ class MessageForwarder(commands.Cog):
 
         v_match = re.search(r"\bv(10|[1-9])\b", desc, re.IGNORECASE)
 
+        # Détection de la rareté via l'emoji ID
         rarity = None
-        if RARITY_IDS["SSR"] in desc:
-            rarity = "SSR"
-        elif RARITY_IDS["UR"] in desc:
-            rarity = "UR"
-        elif RARITY_IDS["SR"] in desc and v_match:
-            rarity = "SR"
-        elif RARITY_IDS["Common"] in desc and v_match:
-            rarity = "Common"
-        elif RARITY_IDS["Rare"] in desc and v_match:
-            rarity = "Rare"
+        for key, emoji_id in RARITY_IDS.items():
+            if emoji_id in desc:
+                if key in {"SR", "Common", "Rare"} and not v_match:
+                    continue
+                rarity = key
+                break
 
         if not rarity:
             return
 
-        # --- Remplacement de :e: par l'emoji rareté ---
+        # Remplacement de :e: par l'emoji animé correspondant
         new_desc = desc.replace(":e:", RARITY_EMOJIS[rarity])
 
         new_embed = discord.Embed(
@@ -114,9 +115,8 @@ class MessageForwarder(commands.Cog):
                 pass
 
         await channel.send(content=after.content, embeds=[new_embed], files=files)
-        log.info("📤 Message forwarded with rarity emoji from #%s", after.channel.name)
+        log.info("🗂 Message forwarded with rarity emoji from %s", after.channel.name)
 
-# --- Extension setup ---
 async def setup(bot: commands.Bot):
     await bot.add_cog(MessageForwarder(bot))
     log.info("⚙️ MessageForwarder cog loaded")
