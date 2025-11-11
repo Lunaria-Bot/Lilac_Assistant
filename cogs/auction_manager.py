@@ -108,23 +108,27 @@ class AuctionManager(commands.Cog):
 
         lowered = message.content.lower()
         if any(word in lowered for word in ACCEPT_KEYWORDS):
-            if message.channel.id in self.accepted_threads:
-                log.debug("⏭ Thread %s already accepted, skipping", message.channel.name)
+            if message.channel.locked or message.channel.id in self.accepted_threads:
                 return
 
-            if not message.channel.locked:
-                forum = message.guild.get_channel(message.channel.parent_id)
-                active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
-                if active_tag and active_tag in message.channel.applied_tags:
-                    new_tags = [t for t in message.channel.applied_tags if t.id != ACTIVE_TAG_ID]
-                    await message.channel.edit(applied_tags=new_tags)
+            forum = message.guild.get_channel(message.channel.parent_id)
+            active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
+            if active_tag and active_tag in message.channel.applied_tags:
+                new_tags = [t for t in message.channel.applied_tags if t.id != ACTIVE_TAG_ID]
+                await message.channel.edit(applied_tags=new_tags)
 
-                await message.channel.send(
-                    "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
-                )
-                await message.channel.edit(locked=True)
-                self.accepted_threads.add(message.channel.id)
-                log.info("🔒 Auction thread accepted and locked: %s", message.channel.name)
+            await message.channel.send(
+                "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
+            )
+            await message.channel.edit(locked=True)
+            self.accepted_threads.add(message.channel.id)
+            log.info("🔒 Auction thread accepted and locked: %s", message.channel.name)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if after.channel.id in self.accepted_threads:
+            return
+        await self.on_message(after)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AuctionManager(bot))
