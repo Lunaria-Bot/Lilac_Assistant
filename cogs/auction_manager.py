@@ -100,7 +100,7 @@ class AuctionManager(commands.Cog):
 
         embed = discord.Embed(
             description=(
-                f"💬 [L!] {message.author.display_name} APP  {timestamp}\n"
+                f"💬 {message.author.display_name} {timestamp}\n"
                 f"{content}\n"
                 f"🔮 {thread_title}\n"
                 f"Message: {message.id} | Author: {author_id} ({author_tag})"
