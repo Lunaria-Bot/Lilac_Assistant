@@ -27,7 +27,15 @@ ALLOWED_ROLE_IDS = {
     1304102244462886982,
 }
 
-ACTIVE_TAG_ID = 1395407621544087583
+ACTIVE_TAG_IDS = {
+    1304523670374453268,
+    1304523716868177942,
+    1304823742358224938,
+    1304523623863685201,
+    1304523581442756619,
+    1395407621544087583,
+}
+
 ACCEPT_KEYWORDS = {"accept", "accepted", "accepté", "accepter", "ok", "confirm"}
 
 class JumpButton(discord.ui.View):
@@ -76,12 +84,12 @@ class AuctionManager(commands.Cog):
                              thread.created_at.isoformat(),
                              [t.id for t in thread.applied_tags])
 
-                    has_active_tag = any(t.id == ACTIVE_TAG_ID for t in thread.applied_tags)
+                    has_active_tag = any(t.id in ACTIVE_TAG_IDS for t in thread.applied_tags)
                     if not has_active_tag:
                         continue
 
                     if thread.created_at < cutoff:
-                        new_tags = [t for t in thread.applied_tags if t.id != ACTIVE_TAG_ID]
+                        new_tags = [t for t in thread.applied_tags if t.id not in ACTIVE_TAG_IDS]
                         await thread.edit(applied_tags=new_tags, locked=True)
                         locked += 1
                         log.info("🔒 Locked thread: %s", thread.name)
@@ -145,11 +153,8 @@ class AuctionManager(commands.Cog):
                 if message.channel.locked or message.channel.id in self.accepted_threads:
                     return
 
-                forum = message.guild.get_channel(message.channel.parent_id)
-                active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
-                if active_tag and active_tag in message.channel.applied_tags:
-                    new_tags = [t for t in message.channel.applied_tags if t.id != ACTIVE_TAG_ID]
-                    await message.channel.edit(applied_tags=new_tags)
+                new_tags = [t for t in message.channel.applied_tags if t.id not in ACTIVE_TAG_IDS]
+                await message.channel.edit(applied_tags=new_tags)
 
                 await message.channel.send(
                     "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
