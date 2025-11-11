@@ -37,6 +37,7 @@ class JumpButton(discord.ui.View):
 class AuctionManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.accepted_threads = set()
 
     @app_commands.command(name="auction-end", description="Lock all auction threads older than 20h and remove active tag")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -107,6 +108,10 @@ class AuctionManager(commands.Cog):
 
         lowered = message.content.lower()
         if any(word in lowered for word in ACCEPT_KEYWORDS):
+            if message.channel.id in self.accepted_threads:
+                log.debug("⏭ Thread %s already accepted, skipping", message.channel.name)
+                return
+
             if not message.channel.locked:
                 forum = message.guild.get_channel(message.channel.parent_id)
                 active_tag = discord.utils.find(lambda t: t.id == ACTIVE_TAG_ID, forum.available_tags)
@@ -118,6 +123,7 @@ class AuctionManager(commands.Cog):
                     "✅ This auction has been accepted please proceed with the trade <:vei_drink:1298164325302931456>"
                 )
                 await message.channel.edit(locked=True)
+                self.accepted_threads.add(message.channel.id)
                 log.info("🔒 Auction thread accepted and locked: %s", message.channel.name)
 
 async def setup(bot: commands.Bot):
