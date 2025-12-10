@@ -148,21 +148,25 @@ class ClanReminder(commands.Cog):
 
         embed = after.embeds[0]
         title = (embed.title or "").lower()
-        desc = embed.description or ""
-        footer = embed.footer.text.lower() if embed.footer and embed.footer.text else ""
+        footer = embed.footer.text if embed.footer and embed.footer.text else ""
 
         # Détection clan summon : "Casting for Round"
         if "casting for round" in title:
-            match = re.search(r"<@!?(\d+)>", desc)
-            if not match and footer:
-                match = re.search(r"<@!?(\d+)>", footer)
-
-            if not match:
+            if not footer:
                 return
 
-            user_id = int(match.group(1))
-            member = after.guild.get_member(user_id)
+            guild = after.guild
+            # Cherche par username exact
+            member = guild.get_member_named(footer)
             if not member:
+                # fallback : cherche par display_name
+                member = discord.utils.find(
+                    lambda m: m.display_name.lower() == footer.lower(),
+                    guild.members
+                )
+
+            if not member:
+                log.warning("❌ ClanReminder: impossible de trouver le membre '%s'", footer)
                 return
 
             await self.start_reminder(member, after.channel)
