@@ -6,6 +6,8 @@ import re
 import discord
 from discord.ext import commands, tasks
 
+print("ClanReminder file loaded")  # ✅ Vérification de chargement
+
 log = logging.getLogger("cog-clan-reminder")
 
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # 30 min par défaut
@@ -151,7 +153,6 @@ class ClanReminder(commands.Cog):
 
         # Détection clan summon : "Casting for Round"
         if "casting for round" in title:
-            # Cherche l’ID du joueur dans la description ou footer
             match = re.search(r"<@!?(\d+)>", desc)
             if not match and footer:
                 match = re.search(r"<@!?(\d+)>", footer)
