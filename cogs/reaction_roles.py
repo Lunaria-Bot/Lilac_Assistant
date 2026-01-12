@@ -96,14 +96,25 @@ class SimpleReactionRoles(commands.Cog):
 
         # Tier 3 (requires roles)
         if emoji == "3️⃣":
-            if any(r.id in REQUIRED_ROLES_FOR_T3 for r in member.roles):
-                role = guild.get_role(ROLE_TIER_3)
-                await member.add_roles(role)
-            else:
+            has_required = any(r.id in REQUIRED_ROLES_FOR_T3 for r in member.roles)
+
+            if not has_required:
+                # Remove reaction immediately
+                channel = guild.get_channel(payload.channel_id)
+                msg = await channel.fetch_message(payload.message_id)
+                await msg.remove_reaction("3️⃣", member)
+
+                # DM user
                 try:
                     await member.send("Keep grinding nub or join our clan to be strong")
                 except:
                     pass
+
+                return
+
+            # User has required roles → give Tier 3
+            role = guild.get_role(ROLE_TIER_3)
+            await member.add_roles(role)
             return
 
     # ---------------------------------------------------------
