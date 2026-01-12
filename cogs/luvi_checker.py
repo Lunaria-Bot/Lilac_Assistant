@@ -56,22 +56,28 @@ class LuviChecker(commands.Cog):
                 except:
                     pass
 
-        # Build log embed
+        # ---------------------------------------------------------
+        # LOGGING — SPLIT INTO CHUNKS OF 25
+        # ---------------------------------------------------------
         if removed_users:
-            embed = discord.Embed(
-                title="Luvi Check — Removed Tier 3",
-                description="Users who lost Tier 3 due to missing required roles:",
-                color=0xe74c3c
-            )
+            chunk_size = 25
+            chunks = [removed_users[i:i + chunk_size] for i in range(0, len(removed_users), chunk_size)]
 
-            for user in removed_users:
-                embed.add_field(
-                    name=user.display_name,
-                    value=f"ID: {user.id}",
-                    inline=False
+            for index, chunk in enumerate(chunks, start=1):
+                embed = discord.Embed(
+                    title=f"Luvi Check — Removed Tier 3 (Page {index}/{len(chunks)})",
+                    description="Users who lost Tier 3 due to missing required roles:",
+                    color=0xe74c3c
                 )
 
-            await log_channel.send(embed=embed)
+                for user in chunk:
+                    embed.add_field(
+                        name=user.display_name,
+                        value=f"ID: {user.id}",
+                        inline=False
+                    )
+
+                await log_channel.send(embed=embed)
 
         else:
             await log_channel.send(
