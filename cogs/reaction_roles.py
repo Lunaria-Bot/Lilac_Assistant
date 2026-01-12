@@ -2,8 +2,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Channel where the autorole message must be sent
-TARGET_CHANNEL_ID = 1460226131830509662
+# Fixed autorole message ID (persists after restart)
+MESSAGE_ID = 1460243538133520510
 
 # Roles for each tier
 ROLE_TIER_1 = 1439616771622572225
@@ -16,8 +16,8 @@ REQUIRED_ROLES_FOR_T3 = {
     1297161587744047106
 }
 
-# Will be set dynamically when the slash command sends the message
-MESSAGE_ID = None
+# Channel where the autorole message must be sent
+TARGET_CHANNEL_ID = 1460226131830509662
 
 
 class SimpleReactionRoles(commands.Cog):
@@ -58,11 +58,9 @@ class SimpleReactionRoles(commands.Cog):
         await msg.add_reaction("2️⃣")
         await msg.add_reaction("3️⃣")
 
-        global MESSAGE_ID
-        MESSAGE_ID = msg.id
-
         await interaction.response.send_message(
-            f"Autorole message sent in <#{TARGET_CHANNEL_ID}>.",
+            f"Autorole message sent in <#{TARGET_CHANNEL_ID}>.\n"
+            f"**Message ID is now fixed and persistent.**",
             ephemeral=True
         )
 
@@ -71,8 +69,7 @@ class SimpleReactionRoles(commands.Cog):
     # ---------------------------------------------------------
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        global MESSAGE_ID
-        if MESSAGE_ID is None or payload.message_id != MESSAGE_ID:
+        if payload.message_id != MESSAGE_ID:
             return
 
         if payload.user_id == self.bot.user.id:
@@ -122,8 +119,7 @@ class SimpleReactionRoles(commands.Cog):
     # ---------------------------------------------------------
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        global MESSAGE_ID
-        if MESSAGE_ID is None or payload.message_id != MESSAGE_ID:
+        if payload.message_id != MESSAGE_ID:
             return
 
         guild = self.bot.get_guild(payload.guild_id)
