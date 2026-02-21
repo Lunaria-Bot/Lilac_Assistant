@@ -120,6 +120,9 @@ class Reminder(commands.Cog):
         if rkey in self.active_reminders:
             return
 
+        # 🔥 NEW: explicit console log when the LNY reminder starts
+        log.info("🔥 Starting LNY reminder for %s (30 minutes)", member.display_name)
+
         if getattr(self.bot, "redis", None):
             expire_at = int(time.time()) + LNY_COOLDOWN
             await self.bot.redis.hset(
@@ -137,7 +140,6 @@ class Reminder(commands.Cog):
                     await self.bot.redis.delete(redis_key)
 
         self.active_reminders[rkey] = asyncio.create_task(task_logic())
-        log.info("🎁 LNY reminder started for %s", member.display_name)
 
     # ---------------------------------------------------------
     # Restore reminders after restart
@@ -303,7 +305,6 @@ class Reminder(commands.Cog):
         # We *need* bot messages here, since the red packet message is usually sent by a bot.
         if message.author.bot:
             if LNY_BOT_ID and message.author.id != LNY_BOT_ID:
-                # If LNY_BOT_ID is set, only allow that bot
                 return
 
         pattern = r"<@!?(\d+)>\s+sent a\s+<:[^:]+:\d+>\s+red packet to\s+<@!?(\d+)>"
