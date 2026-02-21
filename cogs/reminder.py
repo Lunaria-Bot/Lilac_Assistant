@@ -8,7 +8,12 @@ from discord.ext import commands, tasks
 
 log = logging.getLogger("cog-reminder")
 
-COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # default 30 minutes
+# Summon cooldown (from env or default)
+COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "1800"))  # 30 minutes default
+
+# Lunar New Year cooldown (fixed 30 min)
+LNY_COOLDOWN = 1800
+
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
 
@@ -22,8 +27,10 @@ class Reminder(commands.Cog):
     def cog_unload(self):
         self.cleanup_task.cancel()
 
-    async def send_reminder_message(self, member: discord.Member, channel: discord.TextChannel):
-        # 🔔 Message final personnalisé
+    # ---------------------------------------------------------
+    # Reminder message (Summon)
+    # ---------------------------------------------------------
+    async def send_summon_reminder(self, member: discord.Member, channel: discord.TextChannel):
         content = (
             f"⏱️Hey ! {member.mention}, your </summon:1301277778385174601> "
             f"is available <:Kanna_Cool:1298168957420834816>"
@@ -33,60 +40,108 @@ class Reminder(commands.Cog):
                 content,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
-            log.info("⏰ Reminder sent to %s in #%s", member.display_name, channel.name)
+            log.info("⏰ Summon reminder sent to %s in #%s", member.display_name, channel.name)
         except discord.Forbidden:
-            log.warning("❌ Cannot send reminder in %s", channel.name)
+            log.warning("❌ Cannot send summon reminder in %s", channel.name)
 
-    # --- Helper: check if reminder is enabled for a user ---
-    async def is_reminder_enabled(self, member: discord.Member) -> bool:
+    # ---------------------------------------------------------
+    # Reminder message (Lunar New Year)
+    # ---------------------------------------------------------
+    async def send_lny_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        content = f"⏱️ {member.mention}, Your Lunar New Year gift is ready !"
+        try:
+            await channel.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
+            log.info("🎉 LNY reminder sent to %s in #%s", member.display_name, channel.name)
+        except discord.Forbidden:
+            log.warning("❌ Cannot send LNY reminder in %s", channel.name)
+
+    # ---------------------------------------------------------
+    # Check if summon reminder is enabled
+    # ---------------------------------------------------------
+    async def is_summon_enabled(self, member: discord.Member) -> bool:
         if not getattr(self.bot, "redis", None):
-            return True  # ✅ par défaut activé
+            return True
+
         key = f"reminder:settings:{member.guild.id}:{member.id}:summon"
         val = await self.bot.redis.get(key)
         if val is None:
-            return True  # ✅ par défaut activé
+            return True
         return val == "1"
 
-    async def start_reminder(self, member: discord.Member, channel: discord.TextChannel):
-        """Start a summon reminder only if enabled for the user."""
-        if not await self.is_reminder_enabled(member):
+    # ---------------------------------------------------------
+    # Start Summon reminder
+    # ---------------------------------------------------------
+    async def start_summon_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        if not await self.is_summon_enabled(member):
             return
 
         user_id = member.id
+        key = f"reminder:summon:{user_id}"
+
         if user_id in self.active_reminders:
             return
 
         if getattr(self.bot, "redis", None):
             expire_at = int(time.time()) + COOLDOWN_SECONDS
-            await self.bot.redis.hset(
-                f"reminder:summon:{user_id}",
-                mapping={"expire_at": expire_at, "channel_id": channel.id}
-            )
+            await self.bot.redis.hset(key, mapping={"expire_at": expire_at, "channel_id": channel.id})
 
-        async def reminder_task():
+        async def task_logic():
             try:
                 await asyncio.sleep(COOLDOWN_SECONDS)
-                if await self.is_reminder_enabled(member):
-                    await self.send_reminder_message(member, channel)
+                if await self.is_summon_enabled(member):
+                    await self.send_summon_reminder(member, channel)
             finally:
                 self.active_reminders.pop(user_id, None)
                 if getattr(self.bot, "redis", None):
-                    await self.bot.redis.delete(f"reminder:summon:{user_id}")
+                    await self.bot.redis.delete(key)
 
-        task = asyncio.create_task(reminder_task())
-        self.active_reminders[user_id] = task
-        log.info("▶️ Reminder started for %s in #%s (will trigger in %ss)",
-                 member.display_name, channel.name, COOLDOWN_SECONDS)
+        self.active_reminders[user_id] = asyncio.create_task(task_logic())
+        log.info("▶️ Summon reminder started for %s", member.display_name)
 
+    # ---------------------------------------------------------
+    # Start Lunar New Year reminder
+    # ---------------------------------------------------------
+    async def start_lny_reminder(self, member: discord.Member, channel: discord.TextChannel):
+        user_id = member.id
+        key = f"reminder:lny:{user_id}"
+
+        if user_id in self.active_reminders:
+            return
+
+        if getattr(self.bot, "redis", None):
+            expire_at = int(time.time()) + LNY_COOLDOWN
+            await self.bot.redis.hset(key, mapping={"expire_at": expire_at, "channel_id": channel.id})
+
+        async def task_logic():
+            try:
+                await asyncio.sleep(LNY_COOLDOWN)
+                await self.send_lny_reminder(member, channel)
+            finally:
+                self.active_reminders.pop(user_id, None)
+                if getattr(self.bot, "redis", None):
+                    await self.bot.redis.delete(key)
+
+        self.active_reminders[user_id] = asyncio.create_task(task_logic())
+        log.info("🎁 LNY reminder started for %s", member.display_name)
+
+    # ---------------------------------------------------------
+    # Restore reminders after restart
+    # ---------------------------------------------------------
     async def restore_reminders(self):
         if not getattr(self.bot, "redis", None):
             return
 
-        keys = await self.bot.redis.keys("reminder:summon:*")
+        keys = await self.bot.redis.keys("reminder:*:*")
         now = int(time.time())
 
         for key in keys:
-            user_id = int(key.split(":")[-1])
+            parts = key.split(":")
+            rtype = parts[1]      # summon or lny
+            user_id = int(parts[2])
+
             data = await self.bot.redis.hgetall(key)
             if not data:
                 continue
@@ -94,6 +149,7 @@ class Reminder(commands.Cog):
             expire_at = int(data.get("expire_at", 0))
             channel_id = int(data.get("channel_id", 0))
             remaining = expire_at - now
+
             if remaining <= 0:
                 await self.bot.redis.delete(key)
                 continue
@@ -101,39 +157,43 @@ class Reminder(commands.Cog):
             guild = self.bot.get_guild(GUILD_ID)
             if not guild:
                 continue
+
             member = guild.get_member(user_id)
-            if not member:
-                continue
             channel = guild.get_channel(channel_id)
-            if not channel:
+            if not member or not channel:
                 continue
 
-            async def reminder_task():
+            async def task_logic():
                 try:
                     await asyncio.sleep(remaining)
-                    if await self.is_reminder_enabled(member):
-                        await self.send_reminder_message(member, channel)
+                    if rtype == "summon":
+                        if await self.is_summon_enabled(member):
+                            await self.send_summon_reminder(member, channel)
+                    else:
+                        await self.send_lny_reminder(member, channel)
                 finally:
                     self.active_reminders.pop(user_id, None)
                     await self.bot.redis.delete(key)
 
-            task = asyncio.create_task(reminder_task())
-            self.active_reminders[user_id] = task
-            log.info("♻️ Restored reminder for %s in #%s (%ss left)",
-                     member.display_name, channel.name, remaining)
+            self.active_reminders[user_id] = asyncio.create_task(task_logic())
+            log.info("♻️ Restored %s reminder for %s (%ss left)", rtype, member.display_name, remaining)
 
+    # ---------------------------------------------------------
+    # Cleanup expired Redis keys
+    # ---------------------------------------------------------
     @tasks.loop(minutes=REMINDER_CLEANUP_MINUTES)
     async def cleanup_task(self):
         if not getattr(self.bot, "redis", None):
             return
 
-        keys = await self.bot.redis.keys("reminder:summon:*")
+        keys = await self.bot.redis.keys("reminder:*:*")
         now = int(time.time())
 
         for key in keys:
             data = await self.bot.redis.hgetall(key)
             if not data:
                 continue
+
             expire_at = int(data.get("expire_at", 0))
             if expire_at and expire_at <= now:
                 await self.bot.redis.delete(key)
@@ -142,6 +202,9 @@ class Reminder(commands.Cog):
     async def before_cleanup(self):
         await self.bot.wait_until_ready()
 
+    # ---------------------------------------------------------
+    # Summon detection (unchanged)
+    # ---------------------------------------------------------
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if not after.guild or not after.embeds:
@@ -153,9 +216,7 @@ class Reminder(commands.Cog):
         footer = embed.footer.text.lower() if embed.footer and embed.footer.text else ""
 
         if "summon claimed" in title and "auto summon claimed" not in title:
-            # Cherche l'ID dans la description
             match = re.search(r"<@!?(\d+)>", desc)
-            # Fallback : cherche dans le footer si pas trouvé
             if not match and "claimed by" in footer:
                 match = re.search(r"<@!?(\d+)>", footer)
 
@@ -167,11 +228,39 @@ class Reminder(commands.Cog):
             if not member:
                 return
 
-            await self.start_reminder(member, after.channel)
+            await self.start_summon_reminder(member, after.channel)
+
+    # ---------------------------------------------------------
+    # NEW: Lunar New Year red packet detection
+    # ---------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+
+        pattern = r"<@!?(\d+)>\s+sent a\s+<:[^:]+:\d+>\s+red packet to\s+<@!?(\d+)>"
+        match = re.search(pattern, message.content)
+        if not match:
+            return
+
+        sender_id = int(match.group(1))
+        guild = message.guild
+        if not guild:
+            return
+
+        sender = guild.get_member(sender_id)
+        if not sender:
+            return
+
+        await self.start_lny_reminder(sender, message.channel)
+        log.info("🎁 LNY red packet detected: reminder started for sender %s", sender.display_name)
 
 
+# ---------------------------------------------------------
+# Setup
+# ---------------------------------------------------------
 async def setup(bot: commands.Bot):
     cog = Reminder(bot)
     await bot.add_cog(cog)
     await cog.restore_reminders()
-    log.info("⚙️ Reminder cog loaded (logic only, no slash command)")
+    log.info("⚙️ Reminder cog loaded (Summon + LNY)")
