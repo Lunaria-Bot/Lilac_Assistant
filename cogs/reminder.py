@@ -282,6 +282,9 @@ class Reminder(commands.Cog):
         desc = embed.description or ""
         footer = embed.footer.text.lower() if embed.footer and embed.footer.text else ""
 
+        # -------------------------
+        # SUMMON DETECTION
+        # -------------------------
         if "summon claimed" in title and "auto summon claimed" not in title:
             match = re.search(r"<@!?(\d+)>", desc)
             if not match and "claimed by" in footer:
@@ -297,33 +300,18 @@ class Reminder(commands.Cog):
 
             await self.start_summon_reminder(member, after.channel)
 
-    # ---------------------------------------------------------
-    # Lunar New Year red packet detection
-    # ---------------------------------------------------------
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        # We *need* bot messages here, since the red packet message is usually sent by a bot.
-        if message.author.bot:
-            if LNY_BOT_ID and message.author.id != LNY_BOT_ID:
-                return
+        # -------------------------
+        # LUNAR NEW YEAR DETECTION
+        # -------------------------
+        lny_pattern = r"<@!?(\d+)>\s+sent a\s+<:[^:]+:\d+>\s+red packet to\s+<@!?(\d+)>"
+        match = re.search(lny_pattern, desc)
 
-        pattern = r"<@!?(\d+)>\s+sent a\s+<:[^:]+:\d+>\s+red packet to\s+<@!?(\d+)>"
-        match = re.search(pattern, message.content)
-        if not match:
-            return
-
-        sender_id = int(match.group(1))
-
-        guild = message.guild
-        if not guild:
-            return
-
-        sender = guild.get_member(sender_id)
-        if not sender:
-            return
-
-        await self.start_lny_reminder(sender, message.channel)
-        log.info("🎁 LNY red packet detected: reminder started for sender %s", sender.display_name)
+        if match:
+            sender_id = int(match.group(1))
+            sender = after.guild.get_member(sender_id)
+            if sender:
+                await self.start_lny_reminder(sender, after.channel)
+                log.info("🎁 LNY red packet detected (embed edit): reminder started for sender %s", sender.display_name)
 
 
 # ---------------------------------------------------------
