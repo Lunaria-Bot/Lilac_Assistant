@@ -225,7 +225,7 @@ class SimpleReactionRoles(commands.Cog):
         required_emojis = ["1️⃣", "2️⃣", "3️⃣"]
         existing_bot_reactions = set()
 
-        # Detect bot reactions
+        # Detect bot reactions ONLY
         for reaction in msg.reactions:
             async for user in reaction.users():
                 if user.id == BOT_ID:
