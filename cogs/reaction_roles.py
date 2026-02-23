@@ -20,6 +20,9 @@ REQUIRED_ROLES_FOR_T3 = {
 # Channel where the autorole message must be sent
 TARGET_CHANNEL_ID = 1460226131830509662
 
+# Bot ID (Minah)
+BOT_ID = 1421466719678894280
+
 
 class SimpleReactionRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -86,8 +89,8 @@ class SimpleReactionRoles(commands.Cog):
         if payload.message_id != MESSAGE_ID:
             return
 
-        if payload.user_id == self.bot.user.id:
-            return
+        if payload.user_id == BOT_ID:
+            return  # Ignore bot reactions
 
         guild = self.bot.get_guild(payload.guild_id)
         member = guild.get_member(payload.user_id)
@@ -183,7 +186,7 @@ class SimpleReactionRoles(commands.Cog):
         # Remove all non-bot reactions
         for reaction in msg.reactions:
             async for user in reaction.users():
-                if not user.bot:
+                if user.id != BOT_ID and not user.bot:
                     try:
                         await msg.remove_reaction(reaction.emoji, user)
                     except:
@@ -193,6 +196,61 @@ class SimpleReactionRoles(commands.Cog):
             "All user reactions have been removed from the autorole message.",
             ephemeral=True
         )
+
+    # ---------------------------------------------------------
+    # FIX COMMAND — restore bot reactions
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="fix_autorole_reactions",
+        description="Ensure the autorole message has the bot's reactions (1️⃣, 2️⃣, 3️⃣)."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def fix_autorole_reactions(self, interaction: discord.Interaction):
+
+        guild = interaction.guild
+        channel = guild.get_channel(TARGET_CHANNEL_ID)
+
+        if not channel:
+            return await interaction.response.send_message(
+                "Autorole channel not found.", ephemeral=True
+            )
+
+        try:
+            msg = await channel.fetch_message(MESSAGE_ID)
+        except:
+            return await interaction.response.send_message(
+                "Autorole message not found.", ephemeral=True
+            )
+
+        required_emojis = ["1️⃣", "2️⃣", "3️⃣"]
+        existing_bot_reactions = set()
+
+        # Detect bot reactions
+        for reaction in msg.reactions:
+            async for user in reaction.users():
+                if user.id == BOT_ID:
+                    existing_bot_reactions.add(str(reaction.emoji))
+
+        # Add missing reactions
+        added = []
+        for emoji in required_emojis:
+            if emoji not in existing_bot_reactions:
+                try:
+                    await msg.add_reaction(emoji)
+                    added.append(emoji)
+                except:
+                    pass
+
+        if added:
+            await interaction.response.send_message(
+                f"Missing reactions restored: {' '.join(added)}",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "All bot reactions are already present.",
+                ephemeral=True
+            )
 
 
 async def setup(bot: commands.Bot):
