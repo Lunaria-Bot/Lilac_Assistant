@@ -198,11 +198,11 @@ class SimpleReactionRoles(commands.Cog):
         )
 
     # ---------------------------------------------------------
-    # FIX COMMAND — restore bot reactions
+    # FIX COMMAND — remove ALL reactions and re-add bot reactions
     # ---------------------------------------------------------
     @app_commands.command(
         name="fix_autorole_reactions",
-        description="Ensure the autorole message has the bot's reactions (1️⃣, 2️⃣, 3️⃣)."
+        description="Reset autorole reactions: remove all and re-add bot reactions (1️⃣, 2️⃣, 3️⃣)."
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def fix_autorole_reactions(self, interaction: discord.Interaction):
@@ -222,35 +222,24 @@ class SimpleReactionRoles(commands.Cog):
                 "Autorole message not found.", ephemeral=True
             )
 
-        required_emojis = ["1️⃣", "2️⃣", "3️⃣"]
-        existing_bot_reactions = set()
-
-        # Detect bot reactions ONLY
+        # Remove ALL reactions (bot + users)
         for reaction in msg.reactions:
-            async for user in reaction.users():
-                if user.id == BOT_ID:
-                    existing_bot_reactions.add(str(reaction.emoji))
+            try:
+                await reaction.clear()
+            except:
+                pass
 
-        # Add missing reactions
-        added = []
-        for emoji in required_emojis:
-            if emoji not in existing_bot_reactions:
-                try:
-                    await msg.add_reaction(emoji)
-                    added.append(emoji)
-                except:
-                    pass
+        # Re-add bot reactions
+        for emoji in ["1️⃣", "2️⃣", "3️⃣"]:
+            try:
+                await msg.add_reaction(emoji)
+            except:
+                pass
 
-        if added:
-            await interaction.response.send_message(
-                f"Missing reactions restored: {' '.join(added)}",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                "All bot reactions are already present.",
-                ephemeral=True
-            )
+        await interaction.response.send_message(
+            "Autorole reactions have been fully reset and restored.",
+            ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
