@@ -2,10 +2,11 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Roles required to keep Tier 3
+# Roles required to keep Tier 3 (must have at least ONE)
 REQUIRED_ROLES = {
+    1295761591895064577,
     1450472679021740043,
-    1297161587744047106
+    1297161626910462016
 }
 
 # Tier 3 role to remove
@@ -82,8 +83,8 @@ class LuviChecker(commands.Cog):
         else:
             await log_channel.send(
                 embed=discord.Embed(
-                    title="Luvi Check",
-                    description="No users were removed. All Tier 3 holders meet the requirements.",
+                    title="Luvi Check — No Changes",
+                    description="All Tier 3 users meet the requirements.",
                     color=0x2ecc71
                 )
             )
