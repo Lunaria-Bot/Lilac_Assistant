@@ -10,10 +10,11 @@ ROLE_TIER_1 = 1439616771622572225
 ROLE_TIER_2 = 1439616926170218669
 ROLE_TIER_3 = 1439616971908972746
 
-# Required roles for tier 3
+# Required roles for tier 3 (must have at least ONE)
 REQUIRED_ROLES_FOR_T3 = {
+    1295761591895064577,
     1450472679021740043,
-    1297161587744047106
+    1297161626910462016
 }
 
 # Channel where the autorole message must be sent
@@ -93,7 +94,9 @@ class SimpleReactionRoles(commands.Cog):
 
         # Tier 3 (requires roles)
         if emoji == "3️⃣":
-            has_required = any(r.id in REQUIRED_ROLES_FOR_T3 for r in member.roles)
+
+            # Check if member has at least ONE required role
+            has_required = any(role.id in REQUIRED_ROLES_FOR_T3 for role in member.roles)
 
             if not has_required:
                 # Remove reaction immediately
