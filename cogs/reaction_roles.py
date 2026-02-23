@@ -66,6 +66,19 @@ class SimpleReactionRoles(commands.Cog):
         )
 
     # ---------------------------------------------------------
+    # Helper: remove the user's reaction after giving the role
+    # ---------------------------------------------------------
+    async def remove_user_reaction(self, payload):
+        guild = self.bot.get_guild(payload.guild_id)
+        channel = guild.get_channel(payload.channel_id)
+        msg = await channel.fetch_message(payload.message_id)
+
+        try:
+            await msg.remove_reaction(payload.emoji, payload.member)
+        except:
+            pass
+
+    # ---------------------------------------------------------
     # ADD ROLE
     # ---------------------------------------------------------
     @commands.Cog.listener()
@@ -84,12 +97,14 @@ class SimpleReactionRoles(commands.Cog):
         if emoji == "1️⃣":
             role = guild.get_role(ROLE_TIER_1)
             await member.add_roles(role)
+            await self.remove_user_reaction(payload)
             return
 
         # Tier 2
         if emoji == "2️⃣":
             role = guild.get_role(ROLE_TIER_2)
             await member.add_roles(role)
+            await self.remove_user_reaction(payload)
             return
 
         # Tier 3 (requires roles)
@@ -115,6 +130,7 @@ class SimpleReactionRoles(commands.Cog):
             # User has required roles → give Tier 3
             role = guild.get_role(ROLE_TIER_3)
             await member.add_roles(role)
+            await self.remove_user_reaction(payload)
             return
 
     # ---------------------------------------------------------
@@ -140,6 +156,52 @@ class SimpleReactionRoles(commands.Cog):
         elif emoji == "3️⃣":
             role = guild.get_role(ROLE_TIER_3)
             await member.remove_roles(role)
+
+    # ---------------------------------------------------------
+    # NEW COMMAND: /clean_autorole_reactions
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="clean_autorole_reactions",
+        description="Remove all reactions from the autorole message except the bot's own."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def clean_autorole_reactions(self, interaction: discord.Interaction):
+
+        guild = interaction.guild
+        channel = guild.get_channel(TARGET_CHANNEL_ID)
+
+        if not channel:
+            return await interaction.response.send_message(
+                "Autorole channel not found.", ephemeral=True
+            )
+
+        try:
+            msg = await channel.fetch_message(MESSAGE_ID)
+        except:
+            return await interaction.response.send_message(
+                "Autorole message not found.", ephemeral=True
+            )
+
+        # Allowed reactions (bot's own)
+        allowed = {"1️⃣", "2️⃣", "3️⃣"}
+
+        # Remove all user reactions
+        for reaction in msg.reactions:
+            if str(reaction.emoji) in allowed:
+                continue  # keep bot reactions
+
+            async for user in reaction.users():
+                if user.bot:
+                    continue
+                try:
+                    await msg.remove_reaction(reaction.emoji, user)
+                except:
+                    pass
+
+        await interaction.response.send_message(
+            "All user reactions have been removed from the autorole message.",
+            ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):
