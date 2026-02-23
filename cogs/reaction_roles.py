@@ -66,7 +66,7 @@ class SimpleReactionRoles(commands.Cog):
         )
 
     # ---------------------------------------------------------
-    # Helper: remove the user's reaction after giving the role
+    # Helper: remove the user's reaction after giving/removing the role
     # ---------------------------------------------------------
     async def remove_user_reaction(self, payload):
         guild = self.bot.get_guild(payload.guild_id)
@@ -79,7 +79,7 @@ class SimpleReactionRoles(commands.Cog):
             pass
 
     # ---------------------------------------------------------
-    # ADD ROLE
+    # ADD ROLE / REMOVE ROLE (TOGGLE)
     # ---------------------------------------------------------
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -93,33 +93,56 @@ class SimpleReactionRoles(commands.Cog):
         member = guild.get_member(payload.user_id)
         emoji = str(payload.emoji)
 
-        # Tier 1
+        # -------------------------
+        # TIER 1
+        # -------------------------
         if emoji == "1️⃣":
             role = guild.get_role(ROLE_TIER_1)
+
+            if role in member.roles:
+                await member.remove_roles(role)
+                await self.remove_user_reaction(payload)
+                return
+
             await member.add_roles(role)
             await self.remove_user_reaction(payload)
             return
 
-        # Tier 2
+        # -------------------------
+        # TIER 2
+        # -------------------------
         if emoji == "2️⃣":
             role = guild.get_role(ROLE_TIER_2)
+
+            if role in member.roles:
+                await member.remove_roles(role)
+                await self.remove_user_reaction(payload)
+                return
+
             await member.add_roles(role)
             await self.remove_user_reaction(payload)
             return
 
-        # Tier 3 (requires roles)
+        # -------------------------
+        # TIER 3 (requires roles)
+        # -------------------------
         if emoji == "3️⃣":
+            role = guild.get_role(ROLE_TIER_3)
 
-            # Check if member has at least ONE required role
-            has_required = any(role.id in REQUIRED_ROLES_FOR_T3 for role in member.roles)
+            # Toggle OFF
+            if role in member.roles:
+                await member.remove_roles(role)
+                await self.remove_user_reaction(payload)
+                return
+
+            # Check requirements
+            has_required = any(r.id in REQUIRED_ROLES_FOR_T3 for r in member.roles)
 
             if not has_required:
-                # Remove reaction immediately
                 channel = guild.get_channel(payload.channel_id)
                 msg = await channel.fetch_message(payload.message_id)
                 await msg.remove_reaction("3️⃣", member)
 
-                # DM user
                 try:
                     await member.send("Keep grinding nub or join our clan to be strong")
                 except:
@@ -127,42 +150,17 @@ class SimpleReactionRoles(commands.Cog):
 
                 return
 
-            # User has required roles → give Tier 3
-            role = guild.get_role(ROLE_TIER_3)
+            # Toggle ON
             await member.add_roles(role)
             await self.remove_user_reaction(payload)
             return
 
     # ---------------------------------------------------------
-    # REMOVE ROLE
-    # ---------------------------------------------------------
-    @commands.Cog.listener()
-    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        if payload.message_id != MESSAGE_ID:
-            return
-
-        guild = self.bot.get_guild(payload.guild_id)
-        member = guild.get_member(payload.user_id)
-        emoji = str(payload.emoji)
-
-        if emoji == "1️⃣":
-            role = guild.get_role(ROLE_TIER_1)
-            await member.remove_roles(role)
-
-        elif emoji == "2️⃣":
-            role = guild.get_role(ROLE_TIER_2)
-            await member.remove_roles(role)
-
-        elif emoji == "3️⃣":
-            role = guild.get_role(ROLE_TIER_3)
-            await member.remove_roles(role)
-
-    # ---------------------------------------------------------
-    # NEW COMMAND: /clean_autorole_reactions
+    # CLEAN COMMAND
     # ---------------------------------------------------------
     @app_commands.command(
         name="clean_autorole_reactions",
-        description="Remove all reactions from the autorole message except the bot's own."
+        description="Remove all user reactions from the autorole message, keeping only the bot's."
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def clean_autorole_reactions(self, interaction: discord.Interaction):
@@ -182,21 +180,14 @@ class SimpleReactionRoles(commands.Cog):
                 "Autorole message not found.", ephemeral=True
             )
 
-        # Allowed reactions (bot's own)
-        allowed = {"1️⃣", "2️⃣", "3️⃣"}
-
-        # Remove all user reactions
+        # Remove all non-bot reactions
         for reaction in msg.reactions:
-            if str(reaction.emoji) in allowed:
-                continue  # keep bot reactions
-
             async for user in reaction.users():
-                if user.bot:
-                    continue
-                try:
-                    await msg.remove_reaction(reaction.emoji, user)
-                except:
-                    pass
+                if not user.bot:
+                    try:
+                        await msg.remove_reaction(reaction.emoji, user)
+                    except:
+                        pass
 
         await interaction.response.send_message(
             "All user reactions have been removed from the autorole message.",
