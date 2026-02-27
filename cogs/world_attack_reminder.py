@@ -70,10 +70,11 @@ class WorldAttackReminder(commands.Cog):
 
     # -----------------------------
     # /test-worldattack (admin)
+    # Sends the reminder to EVERYONE with the role
     # -----------------------------
     @app_commands.command(
         name="test-worldattack",
-        description="Send yourself a test World Attack reminder."
+        description="Send a test World Attack reminder to everyone with the role."
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def test_worldattack(self, interaction: discord.Interaction):
@@ -85,17 +86,35 @@ class WorldAttackReminder(commands.Cog):
             )
             return
 
-        try:
-            await interaction.user.send(REMINDER_TEXT)
+        guild = interaction.guild
+        role = guild.get_role(ROLE_ID)
+
+        if not role:
             await interaction.response.send_message(
-                "📨 Test reminder sent to your DMs.",
+                f"❌ Role {ROLE_ID} not found.",
                 ephemeral=True
             )
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Failed to send DM: {e}",
-                ephemeral=True
-            )
+            return
+
+        sent = 0
+        failed = 0
+
+        for member in role.members:
+            if member.bot:
+                continue
+
+            try:
+                await member.send(REMINDER_TEXT)
+                sent += 1
+            except Exception:
+                failed += 1
+
+        await interaction.response.send_message(
+            f"📨 Test reminder sent.\n"
+            f"✅ Delivered: {sent}\n"
+            f"❌ Failed: {failed}",
+            ephemeral=True
+        )
 
     # -----------------------------
     # Background task
