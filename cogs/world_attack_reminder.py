@@ -34,6 +34,15 @@ def save_settings(data):
         json.dump(data, f, indent=4)
 
 
+# ---------------------------------------------------------
+# COMMAND GROUP (must be outside the class)
+# ---------------------------------------------------------
+worldattack_group = app_commands.Group(
+    name="worldattack",
+    description="Manage your World Attack reminder settings."
+)
+
+
 class WorldAttackReminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -44,17 +53,9 @@ class WorldAttackReminder(commands.Cog):
         self.reminder_loop.cancel()
 
     # ---------------------------------------------------------
-    # SLASH COMMAND GROUP: /worldattack
+    # /worldattack toggle
     # ---------------------------------------------------------
-    worldattack = app_commands.Group(
-        name="worldattack",
-        description="Manage your World Attack reminder settings."
-    )
-
-    # ---------------------------------------------------------
-    # SUBCOMMAND: /worldattack toggle
-    # ---------------------------------------------------------
-    @worldattack.command(
+    @worldattack_group.command(
         name="toggle",
         description="Enable or disable your daily World Attack reminder."
     )
@@ -74,6 +75,28 @@ class WorldAttackReminder(commands.Cog):
             save_settings(self.settings)
             await interaction.response.send_message(
                 "Your World Attack reminder is now **disabled**.",
+                ephemeral=True
+            )
+
+    # ---------------------------------------------------------
+    # /worldattack test (admin only)
+    # ---------------------------------------------------------
+    @worldattack_group.command(
+        name="test",
+        description="Send yourself a test World Attack reminder."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def test(self, interaction: discord.Interaction):
+
+        try:
+            await interaction.user.send(REMINDER_TEXT)
+            await interaction.response.send_message(
+                "Test reminder sent to your DMs.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"Failed to send DM: {e}",
                 ephemeral=True
             )
 
@@ -133,5 +156,9 @@ class WorldAttackReminder(commands.Cog):
             await log_channel.send("[WorldAttack] Reminder dispatch completed.")
 
 
+# ---------------------------------------------------------
+# SETUP — REGISTER COG + COMMAND GROUP
+# ---------------------------------------------------------
 async def setup(bot: commands.Bot):
     await bot.add_cog(WorldAttackReminder(bot))
+    bot.tree.add_command(worldattack_group)
