@@ -35,7 +35,7 @@ def save_settings(data):
 
 
 # ---------------------------------------------------------
-# COMMAND GROUP (must be outside the class)
+# COMMAND GROUP (declared once, outside the class)
 # ---------------------------------------------------------
 worldattack_group = app_commands.Group(
     name="worldattack",
@@ -60,7 +60,6 @@ class WorldAttackReminder(commands.Cog):
         description="Enable or disable your daily World Attack reminder."
     )
     async def toggle(self, interaction: discord.Interaction):
-
         user_id = interaction.user.id
 
         if user_id in self.settings["disabled_users"]:
@@ -79,7 +78,7 @@ class WorldAttackReminder(commands.Cog):
             )
 
     # ---------------------------------------------------------
-    # /worldattack test (admin only)
+    # /worldattack test
     # ---------------------------------------------------------
     @worldattack_group.command(
         name="test",
@@ -87,7 +86,6 @@ class WorldAttackReminder(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def test(self, interaction: discord.Interaction):
-
         try:
             await interaction.user.send(REMINDER_TEXT)
             await interaction.response.send_message(
@@ -135,30 +133,36 @@ class WorldAttackReminder(commands.Cog):
                     await log_channel.send(f"[WorldAttack] Role {ROLE_ID} not found in {guild.name}.")
                 continue
 
-            for member in role.members:
-                if member.bot:
-                    continue
+        for member in role.members:
+            if member.bot:
+                continue
 
-                if member.id in self.settings["disabled_users"]:
-                    if log_channel:
-                        await log_channel.send(f"[WorldAttack] Skipped {member} (opted out).")
-                    continue
+            if member.id in self.settings["disabled_users"]:
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] Skipped {member} (opted out).")
+                continue
 
-                try:
-                    await member.send(REMINDER_TEXT)
-                    if log_channel:
-                        await log_channel.send(f"[WorldAttack] DM sent to {member} ({member.id}).")
-                except Exception as e:
-                    if log_channel:
-                        await log_channel.send(f"[WorldAttack] Failed to DM {member}: {e}")
+            try:
+                await member.send(REMINDER_TEXT)
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] DM sent to {member} ({member.id}).")
+            except Exception as e:
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] Failed to DM {member}: {e}")
 
         if log_channel:
             await log_channel.send("[WorldAttack] Reminder dispatch completed.")
 
 
 # ---------------------------------------------------------
-# SETUP — REGISTER COG + COMMAND GROUP
+# SETUP — REGISTER COG + COMMAND GROUP + FORCE SYNC
 # ---------------------------------------------------------
 async def setup(bot: commands.Bot):
     await bot.add_cog(WorldAttackReminder(bot))
     bot.tree.add_command(worldattack_group)
+
+    # Force sync so Discord updates the command definitions
+    try:
+        await bot.tree.sync()
+    except Exception:
+        pass
