@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime, time
-import pytz
+from zoneinfo import ZoneInfo
 import json
 import os
 
@@ -82,8 +82,7 @@ class WorldAttackReminder(commands.Cog):
     # ---------------------------------------------------------
     @tasks.loop(minutes=1)
     async def reminder_loop(self):
-        paris = pytz.timezone("Europe/Paris")
-        now = datetime.now(paris)
+        now = datetime.now(ZoneInfo("Europe/Paris"))
 
         # Monday = 0, Friday = 4
         if now.weekday() > 4:
