@@ -33,6 +33,21 @@ bot = commands.Bot(
     case_insensitive=True
 )
 
+# ---------------------------------------------------------
+# TEMPORARY ADMIN COMMAND TO WIPE OLD WORLDATTACK GROUP
+# ---------------------------------------------------------
+@bot.tree.command(name="wipe_worldattack", description="Delete the old /worldattack command group.")
+@discord.app_commands.checks.has_permissions(administrator=True)
+async def wipe_worldattack(interaction: discord.Interaction):
+    bot.tree.remove_command("worldattack")
+    await bot.tree.sync()
+    await interaction.response.send_message(
+        "Old /worldattack command group wiped. Reload the cog and sync again.",
+        ephemeral=True
+    )
+    log.warning("⚠️ /worldattack group wiped manually by %s", interaction.user)
+
+
 # --- Setup hook ---
 async def setup_hook():
     # Connexion Redis partagée pour tous les cogs
