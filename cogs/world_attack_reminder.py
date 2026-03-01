@@ -4,46 +4,37 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-import json
-import os
+import redis.asyncio as redis
 
 log = logging.getLogger("cog-worldattack")
 
-GUILD_ID = 1293611593845706793  # your server ID
+GUILD_ID = 1293611593845706793
 LOG_CHANNEL_ID = 1421465080238964796
 ROLE_ID = 1450472679021740043
 
 REMINDER_TEXT = "Hey Guild Member of Lilac, do not forget to do your world attack!"
-SETTINGS_FILE = "world_attack_settings.json"
 
-
-# -----------------------------
-# Load / Save JSON
-# -----------------------------
-def load_settings():
-    if not os.path.exists(SETTINGS_FILE):
-        return {"disabled": []}
-    with open(SETTINGS_FILE, "r") as f:
-        return json.load(f)
-
-
-def save_settings(data):
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+REDIS_URL = "redis://default:WEQfFAaMkvNPFvEzOpAQsGdDTTbaFzOr@redis-436594b0.railway.internal:6379"
+REDIS_KEY = "worldattack:disabled"  # Redis set of opted‑out users
 
 
 class WorldAttackReminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.settings = load_settings()
+        self.redis = None
         self.task.start()
 
-    def cog_unload(self):
+    async def cog_load(self):
+        self.redis = redis.from_url(REDIS_URL, decode_responses=True)
+
+    async def cog_unload(self):
+        if self.redis:
+            await self.redis.close()
         self.task.cancel()
 
-    # -----------------------------
+    # ---------------------------------------------------------
     # /toggle-worldattack
-    # -----------------------------
+    # ---------------------------------------------------------
     @app_commands.command(
         name="toggle-worldattack",
         description="Enable or disable your daily World Attack reminder."
@@ -51,27 +42,26 @@ class WorldAttackReminder(commands.Cog):
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def toggle_worldattack(self, interaction: discord.Interaction):
 
-        uid = interaction.user.id
+        uid = str(interaction.user.id)
+        disabled = await self.redis.sismember(REDIS_KEY, uid)
 
-        if uid in self.settings["disabled"]:
-            self.settings["disabled"].remove(uid)
-            save_settings(self.settings)
+        if disabled:
+            await self.redis.srem(REDIS_KEY, uid)
             await interaction.response.send_message(
                 "✅ Your World Attack reminder is now enabled.",
                 ephemeral=True
             )
         else:
-            self.settings["disabled"].append(uid)
-            save_settings(self.settings)
+            await self.redis.sadd(REDIS_KEY, uid)
             await interaction.response.send_message(
                 "❌ Your World Attack reminder is now disabled.",
                 ephemeral=True
             )
 
-    # -----------------------------
+    # ---------------------------------------------------------
     # /test-worldattack (admin)
-    # Sends the reminder to EVERYONE with the role
-    # -----------------------------
+    # Sends reminder to EVERYONE with the role
+    # ---------------------------------------------------------
     @app_commands.command(
         name="test-worldattack",
         description="Send a test World Attack reminder to everyone with the role."
@@ -96,11 +86,15 @@ class WorldAttackReminder(commands.Cog):
             )
             return
 
+        disabled = await self.redis.smembers(REDIS_KEY)
         sent = 0
         failed = 0
 
         for member in role.members:
             if member.bot:
+                continue
+
+            if str(member.id) in disabled:
                 continue
 
             try:
@@ -110,15 +104,43 @@ class WorldAttackReminder(commands.Cog):
                 failed += 1
 
         await interaction.response.send_message(
-            f"📨 Test reminder sent.\n"
+            f"📨 Test reminder sent to all role members.\n"
             f"✅ Delivered: {sent}\n"
             f"❌ Failed: {failed}",
             ephemeral=True
         )
 
-    # -----------------------------
-    # Background task
-    # -----------------------------
+    # ---------------------------------------------------------
+    # /world-attack target:<word>
+    # Sends a message to the log channel
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="world-attack",
+        description="Send a world attack target message."
+    )
+    @app_commands.describe(target="Element or target to focus on")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    async def world_attack(self, interaction: discord.Interaction, target: str):
+
+        guild = interaction.guild
+        log_channel = guild.get_channel(LOG_CHANNEL_ID)
+
+        message = (
+            f"Hello, please concentrate all your attack on the world boss "
+            f"of the elements **{target}**"
+        )
+
+        if log_channel:
+            await log_channel.send(message)
+
+        await interaction.response.send_message(
+            f"📨 Target message sent to the log channel:\n**{target}**",
+            ephemeral=True
+        )
+
+    # ---------------------------------------------------------
+    # Background task — runs every minute
+    # ---------------------------------------------------------
     @tasks.loop(minutes=1)
     async def task(self):
         now = datetime.now(ZoneInfo("Europe/Paris"))
@@ -134,9 +156,9 @@ class WorldAttackReminder(commands.Cog):
     async def before_task(self):
         await self.bot.wait_until_ready()
 
-    # -----------------------------
+    # ---------------------------------------------------------
     # Send reminders
-    # -----------------------------
+    # ---------------------------------------------------------
     async def send_reminders(self):
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
@@ -152,11 +174,13 @@ class WorldAttackReminder(commands.Cog):
                 await log_channel.send(f"[WorldAttack] Role {ROLE_ID} not found.")
             return
 
+        disabled = await self.redis.smembers(REDIS_KEY)
+
         for member in role.members:
             if member.bot:
                 continue
 
-            if member.id in self.settings["disabled"]:
+            if str(member.id) in disabled:
                 if log_channel:
                     await log_channel.send(f"[WorldAttack] Skipped {member} (opted out).")
                 continue
@@ -175,4 +199,4 @@ class WorldAttackReminder(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WorldAttackReminder(bot))
-    log.info("⚙️ WorldAttackReminder cog loaded")
+    log.info("⚙️ WorldAttackReminder cog loaded (Redis mode)")
