@@ -2,7 +2,7 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime, time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import redis.asyncio as redis
 
@@ -60,7 +60,7 @@ class WorldAttackReminder(commands.Cog):
 
     # ---------------------------------------------------------
     # /test-worldattack (admin)
-    # Sends reminder to EVERYONE with the role
+    # Sends reminder to EVERYONE with the role (respecting opt‑out)
     # ---------------------------------------------------------
     @app_commands.command(
         name="test-worldattack",
@@ -112,29 +112,59 @@ class WorldAttackReminder(commands.Cog):
 
     # ---------------------------------------------------------
     # /world-attack target:<word>
-    # Sends a message to the log channel
+    # DM ALL role users with a custom target (ignores opt‑out)
     # ---------------------------------------------------------
     @app_commands.command(
         name="world-attack",
-        description="Send a world attack target message."
+        description="Send a world attack target message to all role members."
     )
     @app_commands.describe(target="Element or target to focus on")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def world_attack(self, interaction: discord.Interaction, target: str):
 
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "⛔ You do not have permission to use this command.",
+                ephemeral=True
+            )
+            return
+
         guild = interaction.guild
+        role = guild.get_role(ROLE_ID)
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
 
-        message = (
-            f"Hello, please concentrate all your attack on the world boss "
-            f"of the elements **{target}**"
-        )
+        if not role:
+            await interaction.response.send_message(
+                f"❌ Role {ROLE_ID} not found.",
+                ephemeral=True
+            )
+            return
+
+        msg = f"Hello, do please concentrate all your world attack to {target} Boss"
+
+        sent = 0
+        failed = 0
+
+        for member in role.members:
+            if member.bot:
+                continue
+
+            try:
+                await member.send(msg)
+                sent += 1
+            except Exception:
+                failed += 1
 
         if log_channel:
-            await log_channel.send(message)
+            await log_channel.send(
+                f"[WorldAttack] Target broadcast: **{target}**\n"
+                f"✅ Delivered: {sent} | ❌ Failed: {failed}"
+            )
 
         await interaction.response.send_message(
-            f"📨 Target message sent to the log channel:\n**{target}**",
+            f"📨 Target **{target}** broadcast to all role members.\n"
+            f"✅ Delivered: {sent}\n"
+            f"❌ Failed: {failed}",
             ephemeral=True
         )
 
