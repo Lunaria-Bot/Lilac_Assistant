@@ -2,7 +2,7 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 import redis.asyncio as redis
 
@@ -113,6 +113,7 @@ class WorldAttackReminder(commands.Cog):
     # ---------------------------------------------------------
     # /world-attack target:<word>
     # DM ALL role users with a custom target (ignores opt‑out)
+    # Includes a list of failed deliveries
     # ---------------------------------------------------------
     @app_commands.command(
         name="world-attack",
@@ -143,8 +144,8 @@ class WorldAttackReminder(commands.Cog):
         msg = f"Hello, do please concentrate all your world attack to {target} Boss"
 
         sent = 0
-        failed = 0
-
+        failed = []
+        
         for member in role.members:
             if member.bot:
                 continue
@@ -153,18 +154,29 @@ class WorldAttackReminder(commands.Cog):
                 await member.send(msg)
                 sent += 1
             except Exception:
-                failed += 1
+                failed.append(f"{member.display_name} ({member.id})")
 
+        # Log summary
         if log_channel:
-            await log_channel.send(
+            summary = (
                 f"[WorldAttack] Target broadcast: **{target}**\n"
-                f"✅ Delivered: {sent} | ❌ Failed: {failed}"
+                f"✅ Delivered: {sent}\n"
+                f"❌ Failed: {len(failed)}"
             )
+            await log_channel.send(summary)
+
+            if failed:
+                failed_list = "\n".join(failed)
+                await log_channel.send(f"❌ Failed deliveries:\n{failed_list}")
+
+        # Ephemeral confirmation
+        fail_text = "\n".join(failed) if failed else "None"
 
         await interaction.response.send_message(
             f"📨 Target **{target}** broadcast to all role members.\n"
             f"✅ Delivered: {sent}\n"
-            f"❌ Failed: {failed}",
+            f"❌ Failed: {len(failed)}\n\n"
+            f"Failed list:\n{fail_text}",
             ephemeral=True
         )
 
