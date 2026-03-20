@@ -21,40 +21,28 @@ class LilacEmbed(discord.Embed):
         embed = LilacEmbed(title="Custom", color=Colors.GOLD)
     """
 
-    # ── Preset factories ─────────────────────────────────────
-
     @classmethod
     def success(cls, title: str, description: str = "", **kwargs) -> "LilacEmbed":
-        return cls(title=f"✅  {title}", description=description,
-                   color=Colors.SUCCESS, **kwargs)
+        return cls(title=f"✅  {title}", description=description, color=Colors.SUCCESS, **kwargs)
 
     @classmethod
     def error(cls, title: str, description: str = "", **kwargs) -> "LilacEmbed":
-        return cls(title=f"❌  {title}", description=description,
-                   color=Colors.ERROR, **kwargs)
+        return cls(title=f"❌  {title}", description=description, color=Colors.ERROR, **kwargs)
 
     @classmethod
     def warning(cls, title: str, description: str = "", **kwargs) -> "LilacEmbed":
-        return cls(title=f"⚠️  {title}", description=description,
-                   color=Colors.WARNING, **kwargs)
+        return cls(title=f"⚠️  {title}", description=description, color=Colors.WARNING, **kwargs)
 
     @classmethod
     def info(cls, title: str, description: str = "", **kwargs) -> "LilacEmbed":
-        return cls(title=f"ℹ️  {title}", description=description,
-                   color=Colors.INFO, **kwargs)
+        return cls(title=f"ℹ️  {title}", description=description, color=Colors.INFO, **kwargs)
 
     @classmethod
     def lilac(cls, title: str, description: str = "", **kwargs) -> "LilacEmbed":
-        """Default brand-color embed."""
-        return cls(title=title, description=description,
-                   color=Colors.LILAC, **kwargs)
-
-    # ── Fluent helpers ───────────────────────────────────────
+        return cls(title=title, description=description, color=Colors.LILAC, **kwargs)
 
     def set_author_member(self, member: discord.Member) -> "LilacEmbed":
-        """Set author to a guild member with their avatar."""
-        self.set_author(name=member.display_name,
-                        icon_url=member.display_avatar.url)
+        self.set_author(name=member.display_name, icon_url=member.display_avatar.url)
         return self
 
     def set_guild_thumbnail(self, guild: discord.Guild) -> "LilacEmbed":
@@ -62,16 +50,17 @@ class LilacEmbed(discord.Embed):
             self.set_thumbnail(url=guild.icon.url)
         return self
 
-    def set_requester_footer(self, user: discord.User | discord.Member,
-                              extra: str = "") -> "LilacEmbed":
+    def set_requester_footer(self, user: discord.User | discord.Member, extra: str = "") -> "LilacEmbed":
         suffix = f" • {extra}" if extra else ""
-        self.set_footer(text=f"Requested by {user.display_name}{suffix}",
-                        icon_url=user.display_avatar.url)
+        self.set_footer(
+            text=f"Requested by {user.display_name}{suffix}",
+            icon_url=user.display_avatar.url,
+        )
         return self
 
 
 # ─────────────────────────────────────────────────────────────
-# Leaderboard-specific helpers
+# Leaderboard helpers
 # ─────────────────────────────────────────────────────────────
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -95,18 +84,10 @@ def build_leaderboard_embed(
     guild: discord.Guild,
     user: discord.Member,
 ) -> discord.Embed:
-    """
-    Build a rich leaderboard embed.
-
-    sorted_data: list of (user_id_str, score_str) already sorted desc.
-    """
     emoji = CATEGORY_EMOJIS.get(category, "🏆")
     label = CATEGORY_LABELS.get(category, category.title())
 
-    embed = LilacEmbed(
-        title=f"{emoji}  {label} Leaderboard",
-        color=Colors.GOLD,
-    )
+    embed = LilacEmbed(title=f"{emoji}  {label} Leaderboard", color=Colors.GOLD)
     embed.set_guild_thumbnail(guild)
 
     if not sorted_data:
@@ -114,35 +95,26 @@ def build_leaderboard_embed(
         embed.set_requester_footer(user)
         return embed
 
-    top_10 = sorted_data[:10]
     user_id_str = str(user.id)
+    user_rank   = next((i for i, (uid, _) in enumerate(sorted_data, 1) if uid == user_id_str), None)
+    lines       = []
 
-    lines: list[str] = []
-    user_rank: int | None = None
-
-    for i, (uid, score) in enumerate(sorted_data, start=1):
-        if uid == user_id_str:
-            user_rank = i
-
-    for i, (uid, score) in enumerate(top_10, start=1):
-        member = guild.get_member(int(uid))
+    for i, (uid, score) in enumerate(sorted_data[:10], start=1):
+        member  = guild.get_member(int(uid))
         mention = member.mention if member else f"<@{uid}>"
-        medal = MEDALS.get(i, f"**`#{i:>2}`**")
-        # Highlight the requesting user
-        highlight = " ◀" if uid == user_id_str else ""
-        lines.append(f"{medal}  {mention} — **{score}** claims{highlight}")
+        medal   = MEDALS.get(i, f"**`#{i:>2}`**")
+        hl      = " ◀" if uid == user_id_str else ""
+        lines.append(f"{medal}  {mention} — **{score}** claims{hl}")
 
     embed.description = "\n".join(lines)
 
-    # Personal stats footer bar
     user_score = int(dict(sorted_data).get(user_id_str, 0))
-    if user_rank is not None:
-        if user_rank <= 3:
-            rank_text = f"{MEDALS[user_rank]} You're on the podium!"
-        elif user_rank <= 10:
-            rank_text = f"🎉 You're **#{user_rank}** with **{user_score}** claims"
-        else:
-            rank_text = f"📊 Your rank: **#{user_rank}** · {user_score} claims"
+    if user_rank and user_rank <= 3:
+        rank_text = f"{MEDALS[user_rank]} You're on the podium!"
+    elif user_rank and user_rank <= 10:
+        rank_text = f"🎉 You're **#{user_rank}** with **{user_score}** claims"
+    elif user_rank:
+        rank_text = f"📊 Your rank: **#{user_rank}** · {user_score} claims"
     else:
         rank_text = f"📊 Your claims: **{user_score}**"
 
@@ -152,16 +124,14 @@ def build_leaderboard_embed(
 
 
 # ─────────────────────────────────────────────────────────────
-# Quick one-liner helpers (for ephemeral replies)
+# Quick one-liner helpers
 # ─────────────────────────────────────────────────────────────
 
 async def reply_success(interaction: discord.Interaction, title: str,
                          description: str = "", ephemeral: bool = True):
-    await interaction.followup.send(
-        embed=LilacEmbed.success(title, description), ephemeral=ephemeral)
+    await interaction.followup.send(embed=LilacEmbed.success(title, description), ephemeral=ephemeral)
 
 
 async def reply_error(interaction: discord.Interaction, title: str,
                        description: str = "", ephemeral: bool = True):
-    await interaction.followup.send(
-        embed=LilacEmbed.error(title, description), ephemeral=ephemeral)
+    await interaction.followup.send(embed=LilacEmbed.error(title, description), ephemeral=ephemeral)

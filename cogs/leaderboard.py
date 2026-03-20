@@ -1,299 +1,233 @@
-import os
-import re
 import logging
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from config import GUILD_ID, MAZOKU_BOT_ID, Colors
+from utils.embed_builder import (
+    LilacEmbed,
+    build_leaderboard_embed,
+    CATEGORY_EMOJIS,
+    CATEGORY_LABELS,
+)
+
 log = logging.getLogger("cog-leaderboard")
 
-# --- Env IDs ---
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-MAZOKU_BOT_ID = int(os.getenv("MAZOKU_BOT_ID", "0"))
 
 def is_admin():
     def predicate(interaction: discord.Interaction) -> bool:
         return interaction.user.guild_permissions.administrator
     return app_commands.check(predicate)
 
-# --- View with Select ---
+
+KEY_MAP = {
+    "all":        "leaderboard",
+    "monthly":    "activity:monthly",
+    "autosummon": "activity:autosummon",
+    "summon":     "activity:summon",
+}
+
+
 class LeaderboardView(discord.ui.View):
-    def __init__(self, bot, guild):
+    def __init__(self, bot: commands.Bot, guild: discord.Guild):
         super().__init__(timeout=120)
-        self.bot = bot
+        self.bot   = bot
         self.guild = guild
 
     @discord.ui.select(
-        placeholder="Choose a category",
+        placeholder="📊  Choose a category…",
         options=[
-            discord.SelectOption(label="All time", value="all"),
-            discord.SelectOption(label="Monthly", value="monthly"),
-            discord.SelectOption(label="AutoSummon", value="autosummon"),
-            discord.SelectOption(label="Summon", value="summon"),
-        ]
+            discord.SelectOption(
+                label=CATEGORY_LABELS[k],
+                value=k,
+                emoji=CATEGORY_EMOJIS[k],
+            )
+            for k in ("all", "monthly", "autosummon", "summon")
+        ],
     )
-    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+    async def select_callback(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ):
         category = select.values[0]
-        embed = await self.build_leaderboard(category, interaction.guild, interaction.user)
+        embed = await self._build(category, interaction.guild, interaction.user)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    async def build_leaderboard(self, category: str, guild: discord.Guild, user: discord.Member):
-        key_map = {
-            "all": "leaderboard",
-            "monthly": "activity:monthly",
-            "autosummon": "activity:autosummon",
-            "summon": "activity:summon",
-        }
-        key = key_map.get(category, "leaderboard")
-
+    async def _build(self, category, guild, user):
         if not getattr(self.bot, "redis", None):
-            return discord.Embed(
-                title=f"🏆 {category.title()} Leaderboard",
-                description="❌ Redis not connected.",
-                color=discord.Color.red()
-            )
-
-        data = await self.bot.redis.hgetall(key)
+            return LilacEmbed.error("Redis unavailable", "The database is not connected.")
+        data = await self.bot.redis.hgetall(KEY_MAP[category])
         if not data:
-            return discord.Embed(
-                title=f"🏆 {category.title()} Leaderboard",
-                description="Empty",
-                color=discord.Color.gold()
+            embed = LilacEmbed(
+                title=f"{CATEGORY_EMOJIS[category]}  {CATEGORY_LABELS[category]} Leaderboard",
+                description="*No data yet — start claiming!*",
+                color=Colors.GOLD,
             )
-
+            embed.set_guild_thumbnail(guild)
+            embed.set_requester_footer(user)
+            return embed
         sorted_data = sorted(data.items(), key=lambda x: int(x[1]), reverse=True)
-        top_10 = sorted_data[:10]
-        lines = []
-        user_rank = None
-
-        for i, (uid, score) in enumerate(sorted_data, start=1):
-            if str(user.id) == uid:
-                user_rank = i
-            if i <= 10:
-                member = guild.get_member(int(uid))
-                mention = member.mention if member else f"<@{uid}>"
-                lines.append(f"**{i}.** {mention} — {score} claims")
-
-        user_score = int(data.get(str(user.id), 0))
-        if user_rank and user_rank <= 10:
-            user_line = f"\n\n🎉 {user.mention} is ranked **#{user_rank}** with **{user_score}** claims!"
-        else:
-            user_line = f"\n\n{user.mention} has **{user_score}** claims in **{category.title()}**."
-
-        embed = discord.Embed(
-            title=f"🏆 {category.title()} Leaderboard",
-            description="\n".join(lines) + user_line,
-            color=discord.Color.gold()
-        )
-        embed.set_footer(text=f"Requested by {user.display_name}")
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-        return embed
+        return build_leaderboard_embed(category, sorted_data, guild, user)
 
 
 class Leaderboard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.paused = {
-            "all": False,
-            "monthly": False,
-            "autosummon": False,
-            "summon": False,
-        }
-        log.info("⚙️ Leaderboard cog loaded with GUILD_ID=%s, MAZOKU_BOT_ID=%s", GUILD_ID, MAZOKU_BOT_ID)
+        self.paused = {k: False for k in KEY_MAP}
+        log.info("⚙️ Leaderboard cog loaded (GUILD_ID=%s)", GUILD_ID)
 
     @app_commands.command(name="leaderboard", description="View the leaderboard")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    @app_commands.checks.cooldown(1, 120.0, key=lambda i: (i.user.id))
+    @app_commands.checks.cooldown(1, 120.0, key=lambda i: i.user.id)
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
-        view = LeaderboardView(self.bot, interaction.guild)
-        embed = await view.build_leaderboard("all", interaction.guild, interaction.user)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+        view  = LeaderboardView(self.bot, interaction.guild)
+        embed = await view._build("all", interaction.guild, interaction.user)
+        await interaction.followup.send(embed=embed, view=view)
 
     @leaderboard.error
-    async def leaderboard_error(self, interaction: discord.Interaction, error):
+    async def leaderboard_error(self, interaction, error):
         if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
-                f"⏳ You must wait {int(error.retry_after)}s before using `/leaderboard` again.",
-                ephemeral=True
+                embed=LilacEmbed.warning(
+                    "Slow down!",
+                    f"Please wait **{int(error.retry_after)}s** before using `/leaderboard` again.",
+                ),
+                ephemeral=True,
             )
-    # --- Admin commands ---
+
     @app_commands.command(name="leaderboard-reset", description="Reset scores (admin)")
     @app_commands.choices(
         category=[
-            app_commands.Choice(name="All", value="all"),
-            app_commands.Choice(name="Monthly", value="monthly"),
+            app_commands.Choice(name="All time",   value="all"),
+            app_commands.Choice(name="Monthly",    value="monthly"),
             app_commands.Choice(name="AutoSummon", value="autosummon"),
-            app_commands.Choice(name="Summon", value="summon"),
+            app_commands.Choice(name="Summon",     value="summon"),
             app_commands.Choice(name="Everything", value="all_keys"),
         ]
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_reset(self, interaction: discord.Interaction, category: app_commands.Choice[str]):
+    async def leaderboard_reset(self, interaction, category: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         if not getattr(self.bot, "redis", None):
-            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
-            return
-
+            return await interaction.followup.send(embed=LilacEmbed.error("Redis unavailable"), ephemeral=True)
         if category.value == "all_keys":
-            for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
+            for key in KEY_MAP.values():
                 await self.bot.redis.delete(key)
-            msg = "🧹 All scores have been reset."
+            msg = "All leaderboard scores have been wiped."
         else:
-            key_map = {
-                "all": "leaderboard",
-                "monthly": "activity:monthly",
-                "autosummon": "activity:autosummon",
-                "summon": "activity:summon",
-            }
-            await self.bot.redis.delete(key_map[category.value])
-            msg = f"🧹 Category `{category.value}` has been reset."
-
-        await interaction.followup.send(msg, ephemeral=True)
+            await self.bot.redis.delete(KEY_MAP[category.value])
+            msg = f"Category **{CATEGORY_LABELS[category.value]}** has been reset."
+        await interaction.followup.send(embed=LilacEmbed.success("Reset complete", f"🧹 {msg}"), ephemeral=True)
 
     @leaderboard_reset.error
-    async def leaderboard_reset_error(self, interaction: discord.Interaction, error):
-        try:
-            if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Error while resetting.", ephemeral=True)
-        except discord.InteractionResponded:
-            await interaction.followup.send("❌ Error while resetting.", ephemeral=True)
+    async def _reset_error(self, i, e): await self._admin_error(i, e, "reset")
 
     @app_commands.command(name="leaderboard-pause", description="Pause or resume counters (admin)")
     @app_commands.choices(
         category=[
-            app_commands.Choice(name="All", value="all"),
-            app_commands.Choice(name="Monthly", value="monthly"),
+            app_commands.Choice(name="All time",   value="all"),
+            app_commands.Choice(name="Monthly",    value="monthly"),
             app_commands.Choice(name="AutoSummon", value="autosummon"),
-            app_commands.Choice(name="Summon", value="summon"),
+            app_commands.Choice(name="Summon",     value="summon"),
         ],
         state=[
-            app_commands.Choice(name="Pause", value="pause"),
+            app_commands.Choice(name="Pause",  value="pause"),
             app_commands.Choice(name="Resume", value="resume"),
-        ]
+        ],
     )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_pause(
-        self,
-        interaction: discord.Interaction,
-        category: app_commands.Choice[str],
-        state: app_commands.Choice[str]
-    ):
+    async def leaderboard_pause(self, interaction, category: app_commands.Choice[str], state: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
-
-        if category.value not in self.paused:
-            await interaction.followup.send(f"❌ Unknown category: {category.value}", ephemeral=True)
-            return
-
-        self.paused[category.value] = (state.value == "pause")
-        log.info("Pause command: category=%s state=%s", category.value, state.value)
-
+        self.paused[category.value] = state.value == "pause"
+        icon   = "⏸️" if self.paused[category.value] else "▶️"
+        label  = CATEGORY_LABELS[category.value]
+        status = "paused" if self.paused[category.value] else "resumed"
         await interaction.followup.send(
-            f"⏸️ `{category.value}` → {'paused' if self.paused[category.value] else 'resumed'}.",
-            ephemeral=True
+            embed=LilacEmbed.info(f"{icon}  {label} {status}", f"Scoring for **{label}** is now **{status}**."),
+            ephemeral=True,
         )
 
     @leaderboard_pause.error
-    async def leaderboard_pause_error(self, interaction: discord.Interaction, error):
-        try:
-            if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Error while pausing.", ephemeral=True)
-        except discord.InteractionResponded:
-            await interaction.followup.send("❌ Error while pausing.", ephemeral=True)
+    async def _pause_error(self, i, e): await self._admin_error(i, e, "pause")
 
     @app_commands.command(name="leaderboard-debug", description="View internal stats (admin)")
-    @app_commands.choices(
-        scope=[
-            app_commands.Choice(name="Summary", value="summary"),
-            app_commands.Choice(name="Full detail", value="full"),
-        ]
-    )
+    @app_commands.choices(scope=[
+        app_commands.Choice(name="Summary",     value="summary"),
+        app_commands.Choice(name="Full detail", value="full"),
+    ])
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     @is_admin()
-    async def leaderboard_debug(self, interaction: discord.Interaction, scope: app_commands.Choice[str]):
+    async def leaderboard_debug(self, interaction, scope: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         if not getattr(self.bot, "redis", None):
-            await interaction.followup.send("❌ Redis not connected.", ephemeral=True)
-            return
-
+            return await interaction.followup.send(embed=LilacEmbed.error("Redis unavailable"), ephemeral=True)
         total_monthly = await self.bot.redis.get("activity:monthly:total") or 0
-        sizes = {}
-        for key in ["leaderboard", "activity:monthly", "activity:autosummon", "activity:summon"]:
-            sizes[key] = await self.bot.redis.hlen(key)
-
-        lines = [
-            f"- **Monthly total**: {total_monthly}",
-            f"- **leaderboard** size: {sizes['leaderboard']}",
-            f"- **activity:monthly** size: {sizes['activity:monthly']}",
-            f"- **activity:autosummon** size: {sizes['activity:autosummon']}",
-            f"- **activity:summon** size: {sizes['activity:summon']}",
-        ]
-
-        msg = "🛠️ Debug:\n" + "\n".join(lines)
-        await interaction.followup.send(msg, ephemeral=True)
+        embed = LilacEmbed(title="🛠️  Leaderboard Debug", color=Colors.INFO)
+        for k, redis_key in KEY_MAP.items():
+            size = await self.bot.redis.hlen(redis_key)
+            paused_label = " *(paused)*" if self.paused[k] else ""
+            embed.add_field(
+                name=f"{CATEGORY_EMOJIS[k]} {CATEGORY_LABELS[k]}{paused_label}",
+                value=f"**{size}** entries", inline=True,
+            )
+        embed.add_field(name="📅 Monthly total claims", value=f"**{total_monthly}**", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @leaderboard_debug.error
-    async def leaderboard_debug_error(self, interaction: discord.Interaction, error):
+    async def _debug_error(self, i, e): await self._admin_error(i, e, "debug")
+
+    async def _admin_error(self, interaction, error, action):
         try:
             if isinstance(error, app_commands.CheckFailure):
-                await interaction.response.send_message("❌ Command reserved for admins.", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=LilacEmbed.error("Access denied", "This command is reserved for admins."),
+                    ephemeral=True,
+                )
             else:
-                await interaction.response.send_message("❌ Error during debug.", ephemeral=True)
+                await interaction.response.send_message(
+                    embed=LilacEmbed.error(f"Error during {action}", str(error)),
+                    ephemeral=True,
+                )
         except discord.InteractionResponded:
-            await interaction.followup.send("❌ Error during debug.", ephemeral=True)
+            await interaction.followup.send(embed=LilacEmbed.error(f"Error during {action}"), ephemeral=True)
 
-    # --- Listeners (claims) ---
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if after.author.id != MAZOKU_BOT_ID:
             return
-        if not after.guild or after.guild.id != GUILD_ID:
+        if not after.guild or after.guild.id != GUILD_ID or not after.embeds:
             return
-        if not after.embeds:
-            return
-
         embed = after.embeds[0]
         title = (embed.title or "").lower()
-        if any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
-            match = re.search(r"<@!?(\d+)>", embed.description or "")
-            if not match:
-                return
-            user_id = int(match.group(1))
-            member = after.guild.get_member(user_id)
-            if not member:
-                return
-            if not getattr(self.bot, "redis", None):
-                return
+        if not any(x in title for x in ["card claimed", "auto summon claimed", "summon claimed"]):
+            return
+        match = re.search(r"<@!?(\d+)>", embed.description or "")
+        if not match:
+            return
+        user_id = int(match.group(1))
+        member  = after.guild.get_member(user_id)
+        if not member or not getattr(self.bot, "redis", None):
+            return
+        claim_key = f"claim:{after.id}:{user_id}"
+        if await self.bot.redis.get(claim_key):
+            return
+        await self.bot.redis.set(claim_key, "1", ex=86400)
+        if not self.paused["monthly"]:
+            await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
+            await self.bot.redis.incr("activity:monthly:total")
+        if "auto summon claimed" in title:
+            if not self.paused["autosummon"]:
+                await self.bot.redis.hincrby("activity:autosummon", str(user_id), 1)
+        else:
+            if not self.paused["summon"]:
+                await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
+        if not self.paused["all"]:
+            await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
+        log.info("🏅 %s +1 point (%s)", member.display_name, embed.title)
 
-            claim_key = f"claim:{after.id}:{user_id}"
-            already = await self.bot.redis.get(claim_key)
-            if already:
-                return
-            await self.bot.redis.set(claim_key, "1", ex=86400)
 
-            if not self.paused["monthly"]:
-                await self.bot.redis.hincrby("activity:monthly", str(user_id), 1)
-                await self.bot.redis.incr("activity:monthly:total")
-
-            if "auto summon claimed" in title:
-                if not self.paused["autosummon"]:
-                    await self.bot.redis.hincrby("activity:autosummon", str(user_id), 1)
-            else:
-                if not self.paused["summon"]:
-                    await self.bot.redis.hincrby("activity:summon", str(user_id), 1)
-
-            if not self.paused["all"]:
-                await self.bot.redis.hincrby("leaderboard", str(user_id), 1)
-
-            log.info("🏅 %s gained +1 point from %s", member.display_name, embed.title)
-
-# --- Extension setup ---
 async def setup(bot: commands.Bot):
     await bot.add_cog(Leaderboard(bot))

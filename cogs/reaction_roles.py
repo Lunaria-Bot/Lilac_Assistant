@@ -2,243 +2,183 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Fixed autorole message ID (persists after restart)
-MESSAGE_ID = 1460243538133520510
-
-# Roles for each tier
-ROLE_TIER_1 = 1439616771622572225
-ROLE_TIER_2 = 1439616926170218669
-ROLE_TIER_3 = 1439616971908972746
-
-# Required roles for tier 3 (must have at least ONE)
-REQUIRED_ROLES_FOR_T3 = {
-    1295761591895064577,
-    1450472679021740043,
-    1297161626910462016
-}
-
-# Channel where the autorole message must be sent
-TARGET_CHANNEL_ID = 1460226131830509662
-
-# Bot ID (Minah)
-BOT_ID = 1421466719678894280
+from config import (
+    AUTOROLE_MESSAGE_ID,
+    ROLE_TIER_1, ROLE_TIER_2, ROLE_TIER_3,
+    REQUIRED_ROLES_FOR_T3,
+    TARGET_CHANNEL_ID,
+    BOT_ID,
+    Colors,
+)
+from utils.embed_builder import LilacEmbed
 
 
 class SimpleReactionRoles(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # ---------------------------------------------------------
-    # SLASH COMMAND: /sendautorole
-    # ---------------------------------------------------------
+    # ── /sendautorole ─────────────────────────────────────────
+
     @app_commands.command(
         name="sendautorole",
-        description="Send the autorole message in the configured channel."
+        description="Send the autorole message in the configured channel.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def sendautorole(self, interaction: discord.Interaction):
-
         channel = interaction.guild.get_channel(TARGET_CHANNEL_ID)
         if not channel:
             return await interaction.response.send_message(
-                "Channel not found.", ephemeral=True
+                embed=LilacEmbed.error("Channel not found", f"<#{TARGET_CHANNEL_ID}> is missing."),
+                ephemeral=True,
             )
 
-        embed = discord.Embed(
-            title="React to get pinged for specific tier boss spawns! 🤓",
+        embed = LilacEmbed(
+            title="🔔  React to get pinged for boss spawns!",
             description=(
-                f"**1️⃣ Ping Tier 1** — <@&{ROLE_TIER_1}>\n"
-                f"**2️⃣ Ping Tier 2** — <@&{ROLE_TIER_2}>\n"
-                f"**3️⃣ Ping Tier 3** — <@&{ROLE_TIER_3}>\n\n"
-                "Choose your tier notifications!"
+                f"**1️⃣  Tier 1** — <@&{ROLE_TIER_1}>\n"
+                f"**2️⃣  Tier 2** — <@&{ROLE_TIER_2}>\n"
+                f"**3️⃣  Tier 3** — <@&{ROLE_TIER_3}>\n\n"
+                "React below to toggle your notification role.\n"
+                "React again to remove it."
             ),
-            color=0xf1c40f
+            color=Colors.LILAC,
         )
+        embed.set_footer(text="Tier 3 requires a special rank — keep grinding!")
 
         msg = await channel.send(embed=embed)
-
-        # Add reactions
-        await msg.add_reaction("1️⃣")
-        await msg.add_reaction("2️⃣")
-        await msg.add_reaction("3️⃣")
+        for emoji in ("1️⃣", "2️⃣", "3️⃣"):
+            await msg.add_reaction(emoji)
 
         await interaction.response.send_message(
-            f"Autorole message sent in <#{TARGET_CHANNEL_ID}>.\n"
-            f"**Message ID is now fixed and persistent.**",
-            ephemeral=True
+            embed=LilacEmbed.success(
+                "Autorole message sent",
+                f"Posted in <#{TARGET_CHANNEL_ID}>.  Message ID: `{msg.id}`",
+            ),
+            ephemeral=True,
         )
 
-    # ---------------------------------------------------------
-    # Helper: remove the user's reaction after giving/removing the role
-    # ---------------------------------------------------------
-    async def remove_user_reaction(self, payload):
-        guild = self.bot.get_guild(payload.guild_id)
-        channel = guild.get_channel(payload.channel_id)
-        msg = await channel.fetch_message(payload.message_id)
+    # ── Helpers ───────────────────────────────────────────────
 
+    async def _remove_reaction(self, payload: discord.RawReactionActionEvent):
+        guild   = self.bot.get_guild(payload.guild_id)
+        channel = guild.get_channel(payload.channel_id)
+        msg     = await channel.fetch_message(payload.message_id)
         try:
             await msg.remove_reaction(payload.emoji, payload.member)
-        except:
+        except Exception:
             pass
 
-    # ---------------------------------------------------------
-    # ADD ROLE / REMOVE ROLE (TOGGLE)
-    # ---------------------------------------------------------
+    # ── Reaction add (toggle) ─────────────────────────────────
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        if payload.message_id != MESSAGE_ID:
+        if payload.message_id != AUTOROLE_MESSAGE_ID:
             return
-
         if payload.user_id == BOT_ID:
-            return  # Ignore bot reactions
+            return
 
-        guild = self.bot.get_guild(payload.guild_id)
+        guild  = self.bot.get_guild(payload.guild_id)
         member = guild.get_member(payload.user_id)
-        emoji = str(payload.emoji)
+        emoji  = str(payload.emoji)
 
-        # -------------------------
-        # TIER 1
-        # -------------------------
-        if emoji == "1️⃣":
-            role = guild.get_role(ROLE_TIER_1)
-
-            if role in member.roles:
-                await member.remove_roles(role)
-                await self.remove_user_reaction(payload)
-                return
-
-            await member.add_roles(role)
-            await self.remove_user_reaction(payload)
+        role_map = {
+            "1️⃣": ROLE_TIER_1,
+            "2️⃣": ROLE_TIER_2,
+            "3️⃣": ROLE_TIER_3,
+        }
+        if emoji not in role_map:
             return
 
-        # -------------------------
-        # TIER 2
-        # -------------------------
-        if emoji == "2️⃣":
-            role = guild.get_role(ROLE_TIER_2)
+        role = guild.get_role(role_map[emoji])
 
-            if role in member.roles:
-                await member.remove_roles(role)
-                await self.remove_user_reaction(payload)
-                return
-
-            await member.add_roles(role)
-            await self.remove_user_reaction(payload)
-            return
-
-        # -------------------------
-        # TIER 3 (requires roles)
-        # -------------------------
-        if emoji == "3️⃣":
-            role = guild.get_role(ROLE_TIER_3)
-
-            # Toggle OFF
-            if role in member.roles:
-                await member.remove_roles(role)
-                await self.remove_user_reaction(payload)
-                return
-
-            # Check requirements
+        # Tier 3 gating
+        if emoji == "3️⃣" and role not in member.roles:
             has_required = any(r.id in REQUIRED_ROLES_FOR_T3 for r in member.roles)
-
             if not has_required:
-                channel = guild.get_channel(payload.channel_id)
-                msg = await channel.fetch_message(payload.message_id)
-                await msg.remove_reaction("3️⃣", member)
-
+                await self._remove_reaction(payload)
                 try:
-                    await member.send("Keep grinding nub or join our clan to be strong")
-                except:
+                    await member.send(
+                        "Keep grinding or join our clan to unlock Tier 3 notifications! 💪"
+                    )
+                except Exception:
                     pass
-
                 return
 
-            # Toggle ON
+        # Toggle
+        if role in member.roles:
+            await member.remove_roles(role)
+        else:
             await member.add_roles(role)
-            await self.remove_user_reaction(payload)
-            return
 
-    # ---------------------------------------------------------
-    # CLEAN COMMAND
-    # ---------------------------------------------------------
+        await self._remove_reaction(payload)
+
+    # ── /clean_autorole_reactions ─────────────────────────────
+
     @app_commands.command(
         name="clean_autorole_reactions",
-        description="Remove all user reactions from the autorole message, keeping only the bot's."
+        description="Remove all user reactions from the autorole message.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def clean_autorole_reactions(self, interaction: discord.Interaction):
-
-        guild = interaction.guild
-        channel = guild.get_channel(TARGET_CHANNEL_ID)
-
+        channel = interaction.guild.get_channel(TARGET_CHANNEL_ID)
         if not channel:
             return await interaction.response.send_message(
-                "Autorole channel not found.", ephemeral=True
+                embed=LilacEmbed.error("Channel not found"), ephemeral=True
             )
-
         try:
-            msg = await channel.fetch_message(MESSAGE_ID)
-        except:
+            msg = await channel.fetch_message(AUTOROLE_MESSAGE_ID)
+        except Exception:
             return await interaction.response.send_message(
-                "Autorole message not found.", ephemeral=True
+                embed=LilacEmbed.error("Message not found"), ephemeral=True
             )
 
-        # Remove all non-bot reactions
         for reaction in msg.reactions:
             async for user in reaction.users():
                 if user.id != BOT_ID and not user.bot:
                     try:
                         await msg.remove_reaction(reaction.emoji, user)
-                    except:
+                    except Exception:
                         pass
 
         await interaction.response.send_message(
-            "All user reactions have been removed from the autorole message.",
-            ephemeral=True
+            embed=LilacEmbed.success("Reactions cleaned", "All user reactions have been removed."),
+            ephemeral=True,
         )
 
-    # ---------------------------------------------------------
-    # FIX COMMAND — remove ALL reactions and re-add bot reactions
-    # ---------------------------------------------------------
+    # ── /fix_autorole_reactions ───────────────────────────────
+
     @app_commands.command(
         name="fix_autorole_reactions",
-        description="Reset autorole reactions: remove all and re-add bot reactions (1️⃣, 2️⃣, 3️⃣)."
+        description="Reset autorole reactions: remove all and re-add bot reactions.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def fix_autorole_reactions(self, interaction: discord.Interaction):
-
-        guild = interaction.guild
-        channel = guild.get_channel(TARGET_CHANNEL_ID)
-
+        channel = interaction.guild.get_channel(TARGET_CHANNEL_ID)
         if not channel:
             return await interaction.response.send_message(
-                "Autorole channel not found.", ephemeral=True
+                embed=LilacEmbed.error("Channel not found"), ephemeral=True
             )
-
         try:
-            msg = await channel.fetch_message(MESSAGE_ID)
-        except:
+            msg = await channel.fetch_message(AUTOROLE_MESSAGE_ID)
+        except Exception:
             return await interaction.response.send_message(
-                "Autorole message not found.", ephemeral=True
+                embed=LilacEmbed.error("Message not found"), ephemeral=True
             )
 
-        # Remove ALL reactions (bot + users)
         for reaction in msg.reactions:
             try:
                 await reaction.clear()
-            except:
+            except Exception:
                 pass
-
-        # Re-add bot reactions
-        for emoji in ["1️⃣", "2️⃣", "3️⃣"]:
+        for emoji in ("1️⃣", "2️⃣", "3️⃣"):
             try:
                 await msg.add_reaction(emoji)
-            except:
+            except Exception:
                 pass
 
         await interaction.response.send_message(
-            "Autorole reactions have been fully reset and restored.",
-            ephemeral=True
+            embed=LilacEmbed.success("Reactions reset", "All reactions have been restored."),
+            ephemeral=True,
         )
 
 
