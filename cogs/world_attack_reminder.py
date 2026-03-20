@@ -2,23 +2,25 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 import redis.asyncio as redis
 
-from config import (
-    GUILD_ID, LOG_CHANNEL_ID, WORLD_ATTACK_ROLE_ID, WORLD_ATTACK_TEXT, REDIS_URL,
-)
-from utils.embed_builder import LilacEmbed
-
 log = logging.getLogger("cog-worldattack")
 
-REDIS_KEY = "worldattack:disabled"
+GUILD_ID = 1293611593845706793
+LOG_CHANNEL_ID = 1421465080238964796
+ROLE_ID = 1450472679021740043
+
+REMINDER_TEXT = "Hey Guild Member of Lilac, do not forget to do your world attack!"
+
+REDIS_URL = "redis://default:WEQfFAaMkvNPFvEzOpAQsGdDTTbaFzOr@redis-436594b0.railway.internal:6379"
+REDIS_KEY = "worldattack:disabled"  # Redis set of opted‑out users
 
 
 class WorldAttackReminder(commands.Cog):
     def __init__(self, bot: commands.Bot):
-        self.bot  = bot
+        self.bot = bot
         self.redis = None
         self.task.start()
 
@@ -30,132 +32,165 @@ class WorldAttackReminder(commands.Cog):
             await self.redis.close()
         self.task.cancel()
 
-    # ─────────────────────────────────────────────
+    # ---------------------------------------------------------
     # /toggle-worldattack
-    # ─────────────────────────────────────────────
-
-    @app_commands.command(name="toggle-worldattack", description="Enable or disable your daily World Attack reminder.")
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="toggle-worldattack",
+        description="Enable or disable your daily World Attack reminder."
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def toggle_worldattack(self, interaction: discord.Interaction):
-        uid      = str(interaction.user.id)
+
+        uid = str(interaction.user.id)
         disabled = await self.redis.sismember(REDIS_KEY, uid)
 
         if disabled:
             await self.redis.srem(REDIS_KEY, uid)
             await interaction.response.send_message(
-                embed=LilacEmbed.success("Reminder enabled", "You will receive World Attack reminders again."),
-                ephemeral=True,
+                "✅ Your World Attack reminder is now enabled.",
+                ephemeral=True
             )
         else:
             await self.redis.sadd(REDIS_KEY, uid)
             await interaction.response.send_message(
-                embed=LilacEmbed.info("Reminder disabled", "⏸️ You will no longer receive World Attack reminders."),
-                ephemeral=True,
+                "❌ Your World Attack reminder is now disabled.",
+                ephemeral=True
             )
 
-    # ─────────────────────────────────────────────
+    # ---------------------------------------------------------
     # /test-worldattack (admin)
-    # ─────────────────────────────────────────────
-
-    @app_commands.command(name="test-worldattack", description="Send a test World Attack reminder to everyone.")
+    # Sends reminder to EVERYONE with the role (respecting opt‑out)
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="test-worldattack",
+        description="Send a test World Attack reminder to everyone with the role."
+    )
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def test_worldattack(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message(
-                embed=LilacEmbed.error("Access denied", "This command is reserved for admins."),
-                ephemeral=True,
-            )
 
-        role = interaction.guild.get_role(WORLD_ATTACK_ROLE_ID)
-        if not role:
-            return await interaction.response.send_message(
-                embed=LilacEmbed.error("Role not found", f"Role ID `{WORLD_ATTACK_ROLE_ID}` is missing."),
-                ephemeral=True,
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "⛔ You do not have permission to use this command.",
+                ephemeral=True
             )
+            return
+
+        guild = interaction.guild
+        role = guild.get_role(ROLE_ID)
+
+        if not role:
+            await interaction.response.send_message(
+                f"❌ Role {ROLE_ID} not found.",
+                ephemeral=True
+            )
+            return
 
         disabled = await self.redis.smembers(REDIS_KEY)
-        sent, failed = 0, 0
+        sent = 0
+        failed = 0
+
         for member in role.members:
-            if member.bot or str(member.id) in disabled:
+            if member.bot:
                 continue
+
+            if str(member.id) in disabled:
+                continue
+
             try:
-                await member.send(WORLD_ATTACK_TEXT)
+                await member.send(REMINDER_TEXT)
                 sent += 1
             except Exception:
                 failed += 1
 
         await interaction.response.send_message(
-            embed=LilacEmbed.success(
-                "Test reminder sent",
-                f"✅ Delivered: **{sent}**\n❌ Failed: **{failed}**",
-            ),
-            ephemeral=True,
+            f"📨 Test reminder sent to all role members.\n"
+            f"✅ Delivered: {sent}\n"
+            f"❌ Failed: {failed}",
+            ephemeral=True
         )
 
-    # ─────────────────────────────────────────────
-    # /world-attack target:<word> (admin)
-    # ─────────────────────────────────────────────
-
-    @app_commands.command(name="world-attack", description="Send a world attack target to all role members.")
-    @app_commands.describe(target="Element or boss to focus on")
+    # ---------------------------------------------------------
+    # /world-attack target:<word>
+    # DM ALL role users with a custom target (ignores opt‑out)
+    # Includes a list of failed deliveries
+    # ---------------------------------------------------------
+    @app_commands.command(
+        name="world-attack",
+        description="Send a world attack target message to all role members."
+    )
+    @app_commands.describe(target="Element or target to focus on")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def world_attack(self, interaction: discord.Interaction, target: str):
+
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message(
-                embed=LilacEmbed.error("Access denied"), ephemeral=True
+            await interaction.response.send_message(
+                "⛔ You do not have permission to use this command.",
+                ephemeral=True
             )
+            return
 
-        role = interaction.guild.get_role(WORLD_ATTACK_ROLE_ID)
-        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+        guild = interaction.guild
+        role = guild.get_role(ROLE_ID)
+        log_channel = guild.get_channel(LOG_CHANNEL_ID)
+
         if not role:
-            return await interaction.response.send_message(
-                embed=LilacEmbed.error("Role not found"), ephemeral=True
+            await interaction.response.send_message(
+                f"❌ Role {ROLE_ID} not found.",
+                ephemeral=True
             )
+            return
 
-        msg    = f"Hello, please concentrate all your world attack on the **{target}** boss!"
-        sent   = 0
+        msg = f"Hello, do please concentrate all your world attack to {target} Boss"
+
+        sent = 0
         failed = []
-
+        
         for member in role.members:
             if member.bot:
                 continue
+
             try:
                 await member.send(msg)
                 sent += 1
             except Exception:
-                failed.append(f"{member.display_name} (`{member.id}`)")
+                failed.append(f"{member.display_name} ({member.id})")
 
-        # Log to channel
+        # Log summary
         if log_channel:
-            embed = LilacEmbed(
-                title="⚔️  World Attack Broadcast",
-                description=f"**Target:** {target}\n✅ Delivered: **{sent}**\n❌ Failed: **{len(failed)}**",
+            summary = (
+                f"[WorldAttack] Target broadcast: **{target}**\n"
+                f"✅ Delivered: {sent}\n"
+                f"❌ Failed: {len(failed)}"
             )
+            await log_channel.send(summary)
+
             if failed:
-                embed.add_field(
-                    name="Failed deliveries",
-                    value="\n".join(failed[:20]) + (f"\n…and {len(failed)-20} more" if len(failed) > 20 else ""),
-                    inline=False,
-                )
-            await log_channel.send(embed=embed)
+                failed_list = "\n".join(failed)
+                await log_channel.send(f"❌ Failed deliveries:\n{failed_list}")
+
+        # Ephemeral confirmation
+        fail_text = "\n".join(failed) if failed else "None"
 
         await interaction.response.send_message(
-            embed=LilacEmbed.success(
-                "Broadcast complete",
-                f"Target **{target}** sent to all members.\n✅ Delivered: **{sent}** | ❌ Failed: **{len(failed)}**",
-            ),
-            ephemeral=True,
+            f"📨 Target **{target}** broadcast to all role members.\n"
+            f"✅ Delivered: {sent}\n"
+            f"❌ Failed: {len(failed)}\n\n"
+            f"Failed list:\n{fail_text}",
+            ephemeral=True
         )
 
-    # ─────────────────────────────────────────────
+    # ---------------------------------------------------------
     # Background task — runs every minute
-    # ─────────────────────────────────────────────
-
+    # ---------------------------------------------------------
     @tasks.loop(minutes=1)
     async def task(self):
         now = datetime.now(ZoneInfo("Europe/Paris"))
-        if now.weekday() > 4:  # Saturday / Sunday
+
+        # Monday=0, Friday=4
+        if now.weekday() > 4:
             return
+
         if now.hour == 1 and now.minute == 0:
             await self.send_reminders()
 
@@ -163,39 +198,47 @@ class WorldAttackReminder(commands.Cog):
     async def before_task(self):
         await self.bot.wait_until_ready()
 
+    # ---------------------------------------------------------
+    # Send reminders
+    # ---------------------------------------------------------
     async def send_reminders(self):
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
             return
 
         log_channel = guild.get_channel(LOG_CHANNEL_ID)
-        role        = guild.get_role(WORLD_ATTACK_ROLE_ID)
+        if log_channel:
+            await log_channel.send("[WorldAttack] Starting reminder dispatch...")
+
+        role = guild.get_role(ROLE_ID)
         if not role:
             if log_channel:
-                await log_channel.send(embed=LilacEmbed.error("Role not found", f"ID `{WORLD_ATTACK_ROLE_ID}`"))
+                await log_channel.send(f"[WorldAttack] Role {ROLE_ID} not found.")
             return
 
         disabled = await self.redis.smembers(REDIS_KEY)
-        sent, fail_list = 0, []
 
         for member in role.members:
-            if member.bot or str(member.id) in disabled:
+            if member.bot:
                 continue
+
+            if str(member.id) in disabled:
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] Skipped {member} (opted out).")
+                continue
+
             try:
-                await member.send(WORLD_ATTACK_TEXT)
-                sent += 1
+                await member.send(REMINDER_TEXT)
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] DM sent to {member}.")
             except Exception as e:
-                fail_list.append(f"{member.display_name}: {e}")
+                if log_channel:
+                    await log_channel.send(f"[WorldAttack] Failed to DM {member}: {e}")
 
         if log_channel:
-            embed = LilacEmbed.success(
-                "World Attack reminders sent",
-                f"✅ Delivered: **{sent}** | ❌ Failed: **{len(fail_list)}**",
-            )
-            await log_channel.send(embed=embed)
-        log.info("⚔️ World Attack reminders: %s sent, %s failed", sent, len(fail_list))
+            await log_channel.send("[WorldAttack] Reminder dispatch completed.")
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WorldAttackReminder(bot))
-    log.info("⚙️ WorldAttackReminder cog loaded")
+    log.info("⚙️ WorldAttackReminder cog loaded (Redis mode)")
