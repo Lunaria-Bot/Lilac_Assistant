@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import COOLDOWN_SECONDS, PREMIUM_COOLDOWN_SECONDS
+from config import COOLDOWN_SECONDS, PREMIUM_COOLDOWN_SECONDS, GUILD_ID
 
 log = logging.getLogger("cog-reminders-settings")
 
@@ -43,6 +43,7 @@ class RemindersSettings(commands.Cog):
     reminders_group = app_commands.Group(
         name="reminders",
         description="Manage your personal reminder settings.",
+        guild_ids=[GUILD_ID],
     )
 
     @reminders_group.command(name="status", description="Show your current reminder settings.")
