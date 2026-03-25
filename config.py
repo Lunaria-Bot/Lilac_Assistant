@@ -51,12 +51,8 @@ LOG_CHANNEL_ID      = int(os.getenv("LOG_CHANNEL_ID",      "1421465080238964796"
 # ─────────────────────────────────────────────
 # Cooldowns / timers
 # ─────────────────────────────────────────────
-<<<<<<< HEAD
 COOLDOWN_SECONDS         = int(os.getenv("COOLDOWN_SECONDS",         "1800"))  # 30 min (default)
 PREMIUM_COOLDOWN_SECONDS = int(os.getenv("PREMIUM_COOLDOWN_SECONDS", "900"))   # 15 min (premium)
-=======
-COOLDOWN_SECONDS         = int(os.getenv("COOLDOWN_SECONDS",         "1800"))
->>>>>>> 1a039f22083523eb2e1163d0687c0186b58ef4eb
 HIGH_TIER_COOLDOWN       = int(os.getenv("HIGH_TIER_COOLDOWN",       "300"))
 REMINDER_CLEANUP_MINUTES = int(os.getenv("REMINDER_CLEANUP_MINUTES", "10"))
 REDIS_TTL                = int(os.getenv("REDIS_TTL",                str(60 * 60 * 24 * 7)))
