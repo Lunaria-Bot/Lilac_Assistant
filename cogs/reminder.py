@@ -5,7 +5,11 @@ import re
 import discord
 from discord.ext import commands, tasks
 
+<<<<<<< HEAD
 from config import GUILD_ID, COOLDOWN_SECONDS, PREMIUM_COOLDOWN_SECONDS, REMINDER_CLEANUP_MINUTES
+=======
+from config import GUILD_ID, COOLDOWN_SECONDS, REMINDER_CLEANUP_MINUTES
+>>>>>>> 1a039f22083523eb2e1163d0687c0186b58ef4eb
 
 log = logging.getLogger("cog-reminder")
 
@@ -22,6 +26,7 @@ class Reminder(commands.Cog):
         self.cleanup_task.cancel()
 
     # ─────────────────────────────────────────────
+<<<<<<< HEAD
     # Premium helpers
     # ─────────────────────────────────────────────
 
@@ -41,6 +46,8 @@ class Reminder(commands.Cog):
         return COOLDOWN_SECONDS  # 30 min
 
     # ─────────────────────────────────────────────
+=======
+>>>>>>> 1a039f22083523eb2e1163d0687c0186b58ef4eb
     # Send helpers
     # ─────────────────────────────────────────────
 
@@ -122,8 +129,12 @@ class Reminder(commands.Cog):
     async def start_summon_reminder(self, member: discord.Member, channel: discord.TextChannel):
         if not await self.is_summon_enabled(member):
             return
+<<<<<<< HEAD
         delay = await self.get_summon_cooldown(member)
         await self._start_reminder("summon", member, channel, delay, self.send_summon_reminder)
+=======
+        await self._start_reminder("summon", member, channel, COOLDOWN_SECONDS, self.send_summon_reminder)
+>>>>>>> 1a039f22083523eb2e1163d0687c0186b58ef4eb
 
     async def start_lny_reminder(self, member: discord.Member, channel: discord.TextChannel):
         await self._start_reminder("lny", member, channel, LNY_COOLDOWN, self.send_lny_reminder)
