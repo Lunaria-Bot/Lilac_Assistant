@@ -1,3 +1,4 @@
+import re
 import time
 import logging
 import discord
@@ -177,7 +178,9 @@ class HighTier(commands.Cog):
         found_rarity   = None
         highest_prio   = 0
         for emoji_id, rarity in RARITY_EMOJIS.items():
-            if emoji_id in desc and RARITY_PRIORITY[rarity] > highest_prio:
+            # Match full Discord emoji format: <:name:ID> or <a:name:ID>
+            pattern = rf"<a?:[^:]+:{re.escape(emoji_id)}>"
+            if re.search(pattern, desc) and RARITY_PRIORITY[rarity] > highest_prio:
                 found_rarity = rarity
                 highest_prio = RARITY_PRIORITY[rarity]
 
