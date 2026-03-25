@@ -81,40 +81,8 @@ class Admin(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(name="reminder", description="Enable or disable summon reminders")
-    @app_commands.describe(state="Enable or disable the summon reminder")
-    @app_commands.choices(
-        state=[
-            app_commands.Choice(name="On",  value="on"),
-            app_commands.Choice(name="Off", value="off"),
-        ]
-    )
-    async def reminder_cmd(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
-        if not getattr(self.bot, "redis", None):
-            await interaction.response.send_message(
-                embed=LilacEmbed.warning(
-                    "Redis unavailable",
-                    "Reminders are always enabled when Redis is not configured.",
-                ),
-                ephemeral=True,
-            )
-            return
-
-        key = f"reminder:settings:{interaction.guild.id}:{interaction.user.id}:summon"
-        if state.value == "on":
-            await self.bot.redis.set(key, "1")
-            await interaction.response.send_message(
-                embed=LilacEmbed.success("Reminders enabled", "You will be pinged when your summon is ready."),
-                ephemeral=True,
-            )
-        else:
-            await self.bot.redis.set(key, "0")
-            await interaction.response.send_message(
-                embed=LilacEmbed.info("Reminders paused", "⏸️ You will no longer receive summon reminders."),
-                ephemeral=True,
-            )
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Admin(bot), override=True)
-    log.info("⚙️ Admin cog loaded (sync, sync-clean, reminder)")
+    log.info("⚙️ Admin cog loaded (sync, sync-clean) — /reminder moved to reminders_settings cog")
